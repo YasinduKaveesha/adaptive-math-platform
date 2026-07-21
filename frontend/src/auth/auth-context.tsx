@@ -1,0 +1,364 @@
+import type { Session } from '@supabase/supabase-js';
+import {
+  createContext,
+  type PropsWithChildren,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+
+import { getAuthorizedLearner } from '@/src/api/client';
+import type { MeResponse } from '@/src/api/contracts';
+import { ApiClientError } from '@/src/api/errors';
+import { getSupabaseClient } from '@/src/auth/supabase';
+import { readPublicConfig, type PublicConfig } from '@/src/config/env';
+
+export type Gender = 'female' | 'male' | 'non_binary' | 'prefer_not_to_say';
+
+export type RegistrationInput = {
+  displayName: string;
+  email: string;
+  gender: Gender;
+  password: string;
+};
+
+export type AuthStatus =
+  | 'access-denied'
+  | 'authorized'
+  | 'checking'
+  | 'configuration-error'
+  | 'onboarding'
+  | 'preview'
+  | 'signed-out'
+  | 'unavailable';
+
+type AuthActionResult =
+  | { ok: true; requiresEmailConfirmation?: boolean }
+  | { ok: false; message: string };
+
+type AuthContextValue = {
+  me: MeResponse | null;
+  notice: string | null;
+  profileName: string | null;
+  status: AuthStatus;
+  continueToComponentBPreview: () => void;
+  getAccessToken: (refresh?: boolean) => Promise<string | null>;
+  retryAuthorization: () => Promise<void>;
+  signInWithEmail: (email: string, password: string) => Promise<AuthActionResult>;
+  signOut: () => Promise<void>;
+  signUpWithEmail: (input: RegistrationInput) => Promise<AuthActionResult>;
+};
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+function readDisplayName(session: Session) {
+  const value = session.user.user_metadata.display_name;
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function safeNotice(error: unknown) {
+  if (error instanceof ApiClientError) {
+    if (error.kind === 'forbidden') {
+      return 'This account does not have learner access. Please ask a supervisor for help.';
+    }
+    if (error.kind === 'unauthenticated') return 'Your session expired. Please sign in again.';
+    return error.requestId
+      ? `We could not verify learner access. Support code: ${error.requestId}`
+      : 'We could not verify learner access. Check the connection and try again.';
+  }
+  return 'Something went wrong while signing in. Please try again.';
+}
+
+function isCredentialError(message: string) {
+  const normalized = message.toLowerCase();
+  return normalized.includes('invalid login') || normalized.includes('invalid credentials');
+}
+
+export function AuthProvider({ children }: PropsWithChildren) {
+  const configResult = useMemo(() => readPublicConfig(), []);
+  const config = configResult.config;
+  const [status, setStatus] = useState<AuthStatus>('checking');
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState<string | null>(null);
+  const operationRef = useRef(0);
+
+  const clearLocalSession = useCallback(async (resolvedConfig: PublicConfig, message?: string) => {
+    await getSupabaseClient(resolvedConfig).auth.signOut({ scope: 'local' });
+    setMe(null);
+    setProfileName(null);
+    setStatus('signed-out');
+    setNotice(message ?? null);
+  }, []);
+
+  const authorizeSession = useCallback(
+    async (session: Session, resolvedConfig: PublicConfig) => {
+      const operation = ++operationRef.current;
+      const supabase = getSupabaseClient(resolvedConfig);
+      setStatus('checking');
+      setNotice(null);
+      setProfileName(readDisplayName(session));
+
+      try {
+        const authorizedUser = await getAuthorizedLearner(
+          resolvedConfig,
+          session.access_token,
+          async () => {
+            const { data, error } = await supabase.auth.refreshSession();
+            return error ? null : (data.session?.access_token ?? null);
+          },
+        );
+
+        if (operation !== operationRef.current) return;
+
+        if (!authorizedUser.learner) {
+          setMe(authorizedUser);
+          setStatus('onboarding');
+          return;
+        }
+
+        if (!authorizedUser.roles.includes('learner') || !authorizedUser.learner.active) {
+          setMe(null);
+          setStatus('access-denied');
+          setNotice(
+            'This account does not have active learner access. Please ask a supervisor for help.',
+          );
+          return;
+        }
+
+        setMe(authorizedUser);
+        setProfileName(authorizedUser.learner.display_name?.trim() || readDisplayName(session));
+        setStatus('authorized');
+      } catch (error) {
+        if (operation !== operationRef.current) return;
+
+        if (error instanceof ApiClientError && error.kind === 'unauthenticated') {
+          await clearLocalSession(resolvedConfig, 'Your session expired. Please sign in again.');
+          return;
+        }
+
+        setMe(null);
+        setStatus(
+          error instanceof ApiClientError && error.kind === 'forbidden'
+            ? 'access-denied'
+            : 'unavailable',
+        );
+        setNotice(safeNotice(error));
+      }
+    },
+    [clearLocalSession],
+  );
+
+  useEffect(() => {
+    if (!config) {
+      setStatus('configuration-error');
+      setNotice(configResult.error);
+      return;
+    }
+
+    const supabase = getSupabaseClient(config);
+    let mounted = true;
+
+    void (async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (!mounted) return;
+
+        if (error) {
+          setStatus('unavailable');
+          setNotice('Secure sign-in could not be restored. Please try again.');
+        } else if (data.session) {
+          await authorizeSession(data.session, config);
+        } else {
+          setStatus('signed-out');
+        }
+      } catch {
+        if (!mounted) return;
+        setStatus('unavailable');
+        setNotice('Secure sign-in could not be restored. Please try again.');
+      }
+    })();
+
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      if (event === 'SIGNED_OUT' || !session) {
+        operationRef.current += 1;
+        setMe(null);
+        setProfileName(null);
+        setStatus('signed-out');
+      }
+    });
+
+    return () => {
+      mounted = false;
+      data.subscription.unsubscribe();
+    };
+  }, [authorizeSession, config, configResult.error]);
+
+  const retryAuthorization = useCallback(async () => {
+    if (!config) return;
+    try {
+      const { data, error } = await getSupabaseClient(config).auth.getSession();
+      if (error) {
+        setStatus('unavailable');
+        setNotice('Secure sign-in could not be restored. Please try again.');
+      } else if (data.session) {
+        await authorizeSession(data.session, config);
+      } else {
+        setStatus('signed-out');
+        setNotice(null);
+      }
+    } catch {
+      setStatus('unavailable');
+      setNotice('Secure sign-in could not be restored. Please try again.');
+    }
+  }, [authorizeSession, config]);
+
+  const signInWithEmail = useCallback(
+    async (email: string, password: string): Promise<AuthActionResult> => {
+      if (!config) return { ok: false, message: 'The app is not configured for sign-in yet.' };
+      setStatus('checking');
+      setNotice(null);
+
+      try {
+        const { data, error } = await getSupabaseClient(config).auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+
+        if (error || !data.session) {
+          setStatus('signed-out');
+          return {
+            ok: false,
+            message:
+              error && isCredentialError(error.message)
+                ? 'We could not sign you in. Check the email and password.'
+                : 'The sign-in service could not complete the request. Please try again.',
+          };
+        }
+
+        await authorizeSession(data.session, config);
+        return { ok: true };
+      } catch {
+        setStatus('signed-out');
+        return { ok: false, message: 'The sign-in service could not be reached. Please try again.' };
+      }
+    },
+    [authorizeSession, config],
+  );
+
+  const signUpWithEmail = useCallback(
+    async (input: RegistrationInput): Promise<AuthActionResult> => {
+      if (!config) return { ok: false, message: 'The app is not configured for sign-up yet.' };
+      setStatus('checking');
+      setNotice(null);
+
+      try {
+        const { data, error } = await getSupabaseClient(config).auth.signUp({
+          email: input.email.trim(),
+          password: input.password,
+          options: {
+            data: {
+              display_name: input.displayName.trim(),
+              gender: input.gender,
+            },
+          },
+        });
+
+        if (error || !data.user) {
+          setStatus('signed-out');
+          return {
+            ok: false,
+            message: 'We could not create the account. Check the details and try again.',
+          };
+        }
+
+        setProfileName(input.displayName.trim());
+
+        if (!data.session) {
+          setStatus('signed-out');
+          return { ok: true, requiresEmailConfirmation: true };
+        }
+
+        setMe(null);
+        setStatus('onboarding');
+        return { ok: true };
+      } catch {
+        setStatus('signed-out');
+        return { ok: false, message: 'The sign-up service could not be reached. Please try again.' };
+      }
+    },
+    [config],
+  );
+
+  const signOut = useCallback(async () => {
+    operationRef.current += 1;
+    if (config) {
+      try {
+        await getSupabaseClient(config).auth.signOut({ scope: 'local' });
+      } catch {
+        // The local state below still fails closed if secure storage is unavailable.
+      }
+    }
+    setMe(null);
+    setNotice(null);
+    setProfileName(null);
+    setStatus('signed-out');
+  }, [config]);
+
+  const continueToComponentBPreview = useCallback(() => {
+    if (config?.appEnvironment === 'development') {
+      setNotice(null);
+      setStatus('preview');
+    }
+  }, [config]);
+
+  const getAccessToken = useCallback(async (refresh = false) => {
+    if (!config) return null;
+    const supabase = getSupabaseClient(config);
+    if (refresh) {
+      const { data, error } = await supabase.auth.refreshSession();
+      return error ? null : (data.session?.access_token ?? null);
+    }
+    const { data, error } = await supabase.auth.getSession();
+    return error ? null : (data.session?.access_token ?? null);
+  }, [config]);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      continueToComponentBPreview,
+      getAccessToken,
+      me,
+      notice,
+      profileName,
+      retryAuthorization,
+      signInWithEmail,
+      signOut,
+      signUpWithEmail,
+      status,
+    }),
+    [
+      continueToComponentBPreview,
+      getAccessToken,
+      me,
+      notice,
+      profileName,
+      retryAuthorization,
+      signInWithEmail,
+      signOut,
+      signUpWithEmail,
+      status,
+    ],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const value = useContext(AuthContext);
+  if (!value) throw new Error('useAuth must be used inside AuthProvider.');
+  return value;
+}

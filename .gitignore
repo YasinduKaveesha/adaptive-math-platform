@@ -1,0 +1,40 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Logs and local runtime files
+*.log
+*.pid
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Markdown documentation is local-only except the three approved README files.
+*.md
+!/README.md
+!/backend/README.md
+!/frontend/README.md
+!/backend/buildLog.md
+!/backend/packaging/component_b_internal/IMPORT_POLICY.md
+
+# BE0 provenance evidence is intentionally version-controlled.
+!/backend/provenance/
+!/backend/provenance/*.json
+!/backend/provenance/*.in
+!/backend/provenance/*.lock

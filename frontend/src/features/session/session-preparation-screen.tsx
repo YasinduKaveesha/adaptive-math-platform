@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
-  ScrollView,
   StyleSheet,
   useWindowDimensions,
   View,
@@ -32,6 +31,7 @@ import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 const brandArtwork = require('../../../assets/images/mathmingo-header.png');
 const heroArtwork = require('../../../assets/images/prepare-hero.png');
 const heroAspectRatio = 1672 / 941;
+const heroBorderWidth = 4;
 
 // Temporary preparation data. Replace this one object with the backend-selected
 // lesson summary when the preparation contract exposes it.
@@ -276,9 +276,7 @@ export function SessionPreparationScreen() {
           </AppText>
         </View>
 
-        <ScrollView
-          contentContainerStyle={[styles.scrollContent, compact && styles.scrollContentCompact]}
-          showsVerticalScrollIndicator={false}>
+        <View style={[styles.scrollContent, compact && styles.scrollContentCompact]}>
           <View style={styles.hero}>
             <Image
               accessibilityLabel="MathMingo beside a learning path"
@@ -327,10 +325,13 @@ export function SessionPreparationScreen() {
             </View>
           </View>
 
-          <View style={styles.preparationCard}>
-            <AppText style={styles.sectionTitle}>Let&apos;s get ready!</AppText>
+          <View style={[styles.preparationCard, compact && styles.preparationCardCompact]}>
+            <AppText style={[styles.sectionTitle, compact && styles.sectionTitleCompact]}>
+              Let&apos;s get ready!
+            </AppText>
             <PreparationItem
               color={colors.accentGreen}
+              compact={compact}
               detail={readiness.detail}
               icon={busy ? 'hourglass-outline' : 'checkmark'}
               loading={busy}
@@ -338,12 +339,14 @@ export function SessionPreparationScreen() {
             />
             <PreparationItem
               color="#ffb000"
+              compact={compact}
               detail="Get helpful hints anytime"
               icon="bulb-outline"
               title="Hints available"
             />
             <PreparationItem
               color="#9466e8"
+              compact={compact}
               detail="Learn at your own pace"
               icon="refresh"
               title="You can try again"
@@ -368,7 +371,7 @@ export function SessionPreparationScreen() {
             )}
             <Ionicons color={colors.primaryForeground} name="chevron-forward" size={26} />
           </Pressable>
-        </ScrollView>
+        </View>
 
         <LearnerTabBar activeHomePressEnabled activeTab="home" />
       </View>
@@ -378,29 +381,31 @@ export function SessionPreparationScreen() {
 
 function PreparationItem({
   color,
+  compact = false,
   detail,
   icon,
   loading = false,
   title,
 }: {
   color: string;
+  compact?: boolean;
   detail: string;
   icon: React.ComponentProps<typeof Ionicons>['name'];
   loading?: boolean;
   title: string;
 }) {
   return (
-    <View style={styles.preparationItem}>
-      <View style={[styles.preparationIcon, { backgroundColor: color }]}>
+    <View style={[styles.preparationItem, compact && styles.preparationItemCompact]}>
+      <View style={[styles.preparationIcon, compact && styles.preparationIconCompact, { backgroundColor: color }]}>
         {loading ? (
           <ActivityIndicator color={colors.primaryForeground} size="small" />
         ) : (
-          <Ionicons color={colors.primaryForeground} name={icon} size={23} />
+          <Ionicons color={colors.primaryForeground} name={icon} size={compact ? 19 : 23} />
         )}
       </View>
       <View style={styles.preparationCopy}>
-        <AppText style={styles.preparationTitle}>{title}</AppText>
-        <AppText style={styles.preparationDetail}>{detail}</AppText>
+        <AppText style={[styles.preparationTitle, compact && styles.preparationTitleCompact]}>{title}</AppText>
+        <AppText style={[styles.preparationDetail, compact && styles.preparationDetailCompact]}>{detail}</AppText>
       </View>
     </View>
   );
@@ -417,8 +422,8 @@ const styles = StyleSheet.create({
   greetingNameCompact: { fontSize: 28.35, lineHeight: 33.75 },
   header: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', paddingBottom: spacing.md, paddingHorizontal: spacing.smPlus, paddingTop: 4 },
   headerCompact: { paddingBottom: spacing.sm },
-  hero: { aspectRatio: heroAspectRatio, backgroundColor: colors.secondarySoft, borderColor: colors.surface1, borderRadius: radius.lg, borderWidth: 4, overflow: 'hidden', width: '100%' },
-  heroArtwork: { height: '100%', width: '100%' },
+  hero: { aspectRatio: heroAspectRatio, backgroundColor: colors.secondarySoft, borderColor: colors.surface1, borderRadius: radius.lg, borderWidth: heroBorderWidth, overflow: 'hidden', position: 'relative', width: '100%' },
+  heroArtwork: { bottom: -heroBorderWidth, left: -heroBorderWidth, position: 'absolute', right: -heroBorderWidth, top: -heroBorderWidth },
   heroCopy: { left: '8%', position: 'absolute', top: '16%', width: '62%' },
   heroReady: { color: '#ffb000', fontFamily: typography.fonts.heavy, fontSize: 42 },
   heroReadyCompact: { fontSize: 33.6 },
@@ -434,18 +439,24 @@ const styles = StyleSheet.create({
   lessonLabel: { color: colors.textSecondary, fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm },
   lessonValue: { fontFamily: typography.fonts.bold, fontSize: typography.fontSize.lg, lineHeight: typography.lineHeight.lg },
   mobileCanvas: { alignSelf: 'center', backgroundColor: colors.background, flex: 1, maxWidth: 500, width: '100%' },
-  preparationCard: { backgroundColor: colors.surface1, borderColor: colors.border, borderRadius: radius.lg, borderWidth: 1, elevation: 2, gap: spacing.sm, padding: spacing.md, shadowColor: colors.foreground, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3 },
-  preparationCopy: { flex: 1 },
+  preparationCard: { backgroundColor: colors.surface1, borderColor: colors.border, borderRadius: radius.lg, borderWidth: 1, elevation: 2, flex: 1, gap: spacing.sm, padding: spacing.md, shadowColor: colors.foreground, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3 },
+  preparationCardCompact: { gap: spacing.xs, padding: spacing.smPlus },
+  preparationCopy: { flex: 1, justifyContent: 'center' },
   preparationDetail: { color: colors.textSecondary, fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm },
+  preparationDetailCompact: { fontSize: typography.fontSize.xs, lineHeight: typography.lineHeight.xs },
   preparationIcon: { alignItems: 'center', borderRadius: radius.pill, height: 44, justifyContent: 'center', width: 44 },
-  preparationItem: { alignItems: 'center', borderColor: colors.border, borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', gap: spacing.smPlus, minHeight: 64, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  preparationIconCompact: { height: 34, width: 34 },
+  preparationItem: { alignItems: 'center', borderColor: colors.border, borderRadius: radius.md, borderWidth: 1, flex: 1, flexDirection: 'row', gap: spacing.smPlus, paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
+  preparationItemCompact: { gap: spacing.sm, paddingHorizontal: spacing.smPlus, paddingVertical: 2 },
   preparationTitle: { fontFamily: typography.fonts.bold, fontSize: typography.fontSize.body, lineHeight: typography.lineHeight.body },
+  preparationTitleCompact: { fontSize: typography.fontSize.sm, lineHeight: typography.lineHeight.sm },
   safeArea: { backgroundColor: colors.background, flex: 1 },
-  scrollContent: { gap: spacing.md, paddingBottom: spacing.md, paddingHorizontal: spacing.sm },
+  scrollContent: { flex: 1, gap: spacing.md, paddingBottom: spacing.lg, paddingHorizontal: spacing.sm },
   scrollContentCompact: { gap: spacing.smPlus },
   sectionTitle: { fontFamily: typography.fonts.display, fontSize: typography.fontSize.subtitle, lineHeight: typography.lineHeight.subtitle },
+  sectionTitleCompact: { fontSize: typography.fontSize.lg, lineHeight: typography.lineHeight.lg },
   skillIcon: { backgroundColor: colors.primary },
-  startButton: { alignItems: 'center', alignSelf: 'center', backgroundColor: colors.primary, borderColor: colors.surface1, borderRadius: 14.88, borderWidth: 2, elevation: 2, flexDirection: 'row', justifyContent: 'center', marginVertical: spacing.sm, minHeight: 62, paddingHorizontal: spacing.lg, shadowColor: colors.foreground, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3, width: '86%' },
+  startButton: { alignItems: 'center', alignSelf: 'center', backgroundColor: colors.primary, borderColor: colors.surface1, borderRadius: 14.88, borderWidth: 2, elevation: 2, flexDirection: 'row', justifyContent: 'center', marginBottom: spacing.sm, marginTop: 'auto', minHeight: 62, paddingHorizontal: spacing.lg, shadowColor: colors.foreground, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 3, width: '86%' },
   startButtonDisabled: { opacity: 0.55 },
   startButtonPressed: { opacity: 0.88, transform: [{ translateY: 2 }] },
   startButtonText: { color: colors.primaryForeground, flex: 1, fontFamily: typography.fonts.bold, fontSize: 20, lineHeight: 28, textAlign: 'center' },

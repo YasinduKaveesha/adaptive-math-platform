@@ -1,9 +1,17 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { Animated, Platform, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
+import {
+  Animated,
+  Platform,
+  Pressable,
+  type ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth/auth-context';
@@ -15,6 +23,16 @@ const brandArtwork = require('../../../assets/images/mathmingo-header.png');
 const heroArtwork = require('../../../assets/images/hero-section.png');
 const learningPathArtwork = require('../../../assets/images/learning-path.png');
 const heroAspectRatio = 1672 / 941;
+const heroBorderWidth = 4;
+/** Fraction of the hero's scrollable distance past which a settled gesture snaps to the path instead of back to the hero. */
+const heroSnapThreshold = 0.3;
+
+/**
+ * Module-scoped, not persisted: resets on app relaunch (new JS runtime), stays
+ * true across navigations within the same app session once the learner scrolls
+ * past the hero once.
+ */
+let heroDismissedThisAppSession = false;
 
 type ComponentBSkillId =
   | 'counting'
@@ -51,6 +69,13 @@ export function LearnerHomeScreen() {
   const { me, profileName } = useAuth();
   const displayName = me?.learner?.display_name?.trim() || profileName || 'Yass';
   const openBLearning = () => router.push('/(learner)/prepare');
+  const scrollRef = useRef<ScrollView>(null);
+  const dismissTriggeredRef = useRef(heroDismissedThisAppSession);
+  const snapInFlightRef = useRef(false);
+  const [scrollEnabled, setScrollEnabled] = useState(() => !heroDismissedThisAppSession);
+  const [showContinuationFade, setShowContinuationFade] = useState(
+    () => !heroDismissedThisAppSession,
+  );
   const scrollY = useRef(new Animated.Value(0)).current;
   const introOpacity = scrollY.interpolate({
     extrapolate: 'clamp',
@@ -70,10 +95,148 @@ export function LearnerHomeScreen() {
   const usableHeight = height - insets.top - insets.bottom;
   const fixedHeaderHeight = compact ? 63 : 88;
   const fixedNavHeight = (compact ? 61 : 73) + 11.75;
-  const pathViewportHeight = Math.max(0, usableHeight - fixedHeaderHeight - fixedNavHeight);
+  const [measuredViewportHeight, setMeasuredViewportHeight] = useState(0);
+  const pathViewportHeight =
+    measuredViewportHeight || Math.max(0, usableHeight - fixedHeaderHeight - fixedNavHeight);
+  // The header already supplies the visible gap above the panel (its own
+  // paddingBottom), so the panel only needs a matching paddingBottom of its
+  // own to keep the gap below it equal — no separate paddingTop here.
+  const dashboardBottomPadding = compact ? 3 : spacing.md;
   const pathPanelWidth = Math.min(
     Math.min(width, 500) - spacing.md,
-    Math.max(0, pathViewportHeight - spacing.xl) * (941 / 1672),
+    Math.max(0, pathViewportHeight - dashboardBottomPadding) * (941 / 1672),
+  );
+
+  const handleScroll = Animated.event(
+    [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+    { useNativeDriver: Platform.OS !== 'web' },
+  );
+
+  /**
+   * Runs only once the learner's gesture has fully settled (drag released with
+   * no momentum, or momentum has finished) — never while the scroll is still
+   * actively moving, so it never fights the finger or native inertia. Whatever
+   * fraction of the hero was scrolled past, this snaps to whichever of the two
+   * end states (hero visible, or learning path pinned) it was closer to.
+   */
+  const handleGestureSettle = (nativeEvent: {
+    contentOffset: { y: number };
+    contentSize: { height: number };
+    layoutMeasurement: { height: number };
+  }) => {
+    if (dismissTriggeredRef.current || snapInFlightRef.current) return;
+    const maxOffset = Math.max(0, nativeEvent.contentSize.height - nativeEvent.layoutMeasurement.height);
+    const offsetY = nativeEvent.contentOffset.y;
+    if (maxOffset <= 0 || offsetY <= 0 || offsetY >= maxOffset) return;
+
+    snapInFlightRef.current = true;
+    const snapToPath = offsetY >= maxOffset * heroSnapThreshold;
+    if (snapToPath) {
+      dismissTriggeredRef.current = true;
+      heroDismissedThisAppSession = true;
+      setShowContinuationFade(false);
+      scrollRef.current?.scrollTo({ y: maxOffset, animated: true });
+      setScrollEnabled(false);
+    } else {
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    }
+    setTimeout(() => {
+      snapInFlightRef.current = false;
+    }, 400);
+  };
+
+  const pathPanelContent = (
+    <View
+      style={[
+        styles.dashboardSection,
+        { minHeight: pathViewportHeight, paddingBottom: dashboardBottomPadding },
+      ]}>
+      <View style={[styles.pathPanel, { width: pathPanelWidth }]}>
+          <Image
+            accessibilityLabel="Learning path through five lessons to a treasure chest"
+            contentFit="cover"
+            source={learningPathArtwork}
+            style={styles.learningPathArtwork}
+          />
+          <View style={styles.pathHeading}>
+            <Ionicons color={colors.accentGreen} name="map" size={compact ? 22.5 : 27} />
+            <AppText style={[styles.pathHeadingText, compact && styles.pathHeadingTextCompact]}>
+              Your Learning Path
+            </AppText>
+          </View>
+          {pathNodes.map((node, index) => {
+            const skill = componentBSkills[node.skillId];
+            const isCurrent = node.state === 'current';
+            const stageContent = (
+              <>
+              <View
+                style={[
+                  styles.pathStageNumber,
+                  { backgroundColor: node.color },
+                  isCurrent && styles.pathStageNumberActive,
+                ]}>
+                <AppText style={[styles.pathStageNumberText, compact && styles.pathStageNumberTextCompact]}>
+                  {index + 1}
+                </AppText>
+              </View>
+              <View style={[styles.pathStageCard, isCurrent && styles.pathStageCardActive]}>
+                <View style={styles.pathStageCopy}>
+                  <AppText style={[styles.pathStageTitle, compact && styles.pathStageTitleCompact]}>
+                    {skill.label}
+                  </AppText>
+                  <View style={styles.pathStageProgress}>
+                    {!isCurrent && <Ionicons color="#ffb51f" name="star" size={compact ? 11.5 : 13.8} />}
+                    <AppText
+                      style={[
+                        styles.pathStageSubtitle,
+                        compact && styles.pathStageSubtitleCompact,
+                        isCurrent && styles.pathStageSubtitleActive,
+                        isCurrent && compact && styles.pathStageSubtitleActiveCompact,
+                        isCurrent && { color: node.color },
+                      ]}>
+                      {node.subtitle}
+                    </AppText>
+                  </View>
+                </View>
+                <Ionicons
+                  color={isCurrent ? colors.primary : node.color}
+                  name={isCurrent ? 'play' : 'sparkles'}
+                  size={isCurrent ? (compact ? 22.4 : 27.2) : compact ? 17.6 : 20.8}
+                />
+              </View>
+              </>
+            );
+
+            if (isCurrent) {
+              return (
+                <Pressable
+                  accessibilityHint="Opens Component B session preparation"
+                  accessibilityLabel={`${skill.label}, current lesson`}
+                  accessibilityRole="button"
+                  key={node.skillId}
+                  onPress={openBLearning}
+                  style={({ pressed }) => [
+                    styles.pathStage,
+                    { left: node.left, top: node.top },
+                    pressed && styles.pathStagePressed,
+                  ]}>
+                  {stageContent}
+                </Pressable>
+              );
+            }
+
+            return (
+              <View
+                accessibilityLabel={`${skill.label}, on your learning path`}
+                accessible
+                key={node.skillId}
+                style={[styles.pathStage, { left: node.left, top: node.top }]}>
+                {stageContent}
+              </View>
+            );
+          })}
+      </View>
+    </View>
   );
 
   return (
@@ -101,11 +264,28 @@ export function LearnerHomeScreen() {
         </View>
 
         <Animated.ScrollView
+          bounces={scrollEnabled}
           contentContainerStyle={styles.scrollContent}
-          onScroll={Animated.event(
-            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-            { useNativeDriver: Platform.OS !== 'web' },
-          )}
+          onContentSizeChange={() => {
+            if (!scrollEnabled) scrollRef.current?.scrollToEnd({ animated: false });
+          }}
+          onLayout={(event) => {
+            setMeasuredViewportHeight(event.nativeEvent.layout.height);
+            if (!scrollEnabled) scrollRef.current?.scrollToEnd({ animated: false });
+          }}
+          onMomentumScrollEnd={(event) => handleGestureSettle(event.nativeEvent)}
+          onScroll={handleScroll}
+          onScrollEndDrag={(event) => {
+            // iOS only: when a drag ends with no fling, no deceleration follows,
+            // so onMomentumScrollEnd never fires — settle immediately in that
+            // case. Android always fires onMomentumScrollEnd on its own.
+            if (Platform.OS !== 'ios') return;
+            const velocity = event.nativeEvent.velocity;
+            const speed = velocity ? Math.hypot(velocity.x, velocity.y) : 0;
+            if (speed < 0.05) handleGestureSettle(event.nativeEvent);
+          }}
+          ref={scrollRef}
+          scrollEnabled={scrollEnabled}
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
           style={styles.scrollView}>
@@ -152,109 +332,25 @@ export function LearnerHomeScreen() {
             </View>
           </Animated.View>
 
-          <View style={[styles.dashboardSection, { minHeight: pathViewportHeight }]}>
-            <View style={[styles.pathPanel, { width: pathPanelWidth }]}>
-                <Image
-                  accessibilityLabel="Learning path through five lessons to a treasure chest"
-                  contentFit="cover"
-                  source={learningPathArtwork}
-                  style={styles.learningPathArtwork}
-                />
-                <View style={styles.pathHeading}>
-                  <Ionicons color={colors.accentGreen} name="map" size={compact ? 22.5 : 27} />
-                  <AppText style={[styles.pathHeadingText, compact && styles.pathHeadingTextCompact]}>
-                    Your Learning Path
-                  </AppText>
-                </View>
-                {pathNodes.map((node, index) => {
-                  const skill = componentBSkills[node.skillId];
-                  const isCurrent = node.state === 'current';
-                  const stageContent = (
-                    <>
-                    <View
-                      style={[
-                        styles.pathStageNumber,
-                        { backgroundColor: node.color },
-                        isCurrent && styles.pathStageNumberActive,
-                      ]}>
-                      <AppText style={[styles.pathStageNumberText, compact && styles.pathStageNumberTextCompact]}>
-                        {index + 1}
-                      </AppText>
-                    </View>
-                    <View style={[styles.pathStageCard, isCurrent && styles.pathStageCardActive]}>
-                      <View style={styles.pathStageCopy}>
-                        <AppText style={[styles.pathStageTitle, compact && styles.pathStageTitleCompact]}>
-                          {skill.label}
-                        </AppText>
-                        <View style={styles.pathStageProgress}>
-                          {!isCurrent && <Ionicons color="#ffb51f" name="star" size={compact ? 11.5 : 13.8} />}
-                          <AppText
-                            style={[
-                              styles.pathStageSubtitle,
-                              compact && styles.pathStageSubtitleCompact,
-                              isCurrent && styles.pathStageSubtitleActive,
-                              isCurrent && compact && styles.pathStageSubtitleActiveCompact,
-                              isCurrent && { color: node.color },
-                            ]}>
-                            {node.subtitle}
-                          </AppText>
-                        </View>
-                      </View>
-                      <Ionicons
-                        color={isCurrent ? colors.primary : node.color}
-                        name={isCurrent ? 'play' : 'sparkles'}
-                        size={isCurrent ? (compact ? 22.4 : 27.2) : compact ? 17.6 : 20.8}
-                      />
-                    </View>
-                    </>
-                  );
-
-                  if (isCurrent) {
-                    return (
-                      <Pressable
-                        accessibilityHint="Opens Component B session preparation"
-                        accessibilityLabel={`${skill.label}, current lesson`}
-                        accessibilityRole="button"
-                        key={node.skillId}
-                        onPress={openBLearning}
-                        style={({ pressed }) => [
-                          styles.pathStage,
-                          { left: node.left, top: node.top },
-                          pressed && styles.pathStagePressed,
-                        ]}>
-                        {stageContent}
-                      </Pressable>
-                    );
-                  }
-
-                  return (
-                    <View
-                      accessibilityLabel={`${skill.label}, on your learning path`}
-                      accessible
-                      key={node.skillId}
-                      style={[styles.pathStage, { left: node.left, top: node.top }]}>
-                      {stageContent}
-                    </View>
-                  );
-                })}
-            </View>
-          </View>
+          {pathPanelContent}
         </Animated.ScrollView>
 
-        <Animated.View
-          style={[
-            styles.scrollContinuationFade,
-            { bottom: fixedNavHeight, opacity: continuationFadeOpacity },
-          ]}
-        >
-          <View style={styles.scrollContinuationFade1} />
-          <View style={styles.scrollContinuationFade2} />
-          <View style={styles.scrollContinuationFade3} />
-          <View style={styles.scrollContinuationFade4} />
-          <View style={styles.scrollContinuationFade5} />
-          <View style={styles.scrollContinuationFade6} />
-          <View style={styles.scrollContinuationFade7} />
-        </Animated.View>
+        {showContinuationFade && (
+          <Animated.View
+            style={[
+              styles.scrollContinuationFade,
+              { bottom: fixedNavHeight, opacity: continuationFadeOpacity },
+            ]}
+          >
+            <View style={styles.scrollContinuationFade1} />
+            <View style={styles.scrollContinuationFade2} />
+            <View style={styles.scrollContinuationFade3} />
+            <View style={styles.scrollContinuationFade4} />
+            <View style={styles.scrollContinuationFade5} />
+            <View style={styles.scrollContinuationFade6} />
+            <View style={styles.scrollContinuationFade7} />
+          </Animated.View>
+        )}
         <LearnerTabBar activeTab="home" />
       </View>
     </SafeAreaView>
@@ -266,7 +362,7 @@ const styles = StyleSheet.create({
   brandArtwork: { aspectRatio: 1916 / 821, height: 68 },
   brandArtworkCompact: { height: 56 },
   buttonPressed: { borderBottomWidth: 0, transform: [{ translateY: 3 }] },
-  dashboardSection: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.sm, paddingVertical: spacing.md, width: '100%' },
+  dashboardSection: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.sm, paddingTop: 0, width: '100%' },
   dots: { flexDirection: 'row', gap: 2, marginTop: 2 },
   greeting: { alignItems: 'flex-end', flexShrink: 1, justifyContent: 'center' },
   greetingName: { color: '#26A5FD', fontFamily: typography.fonts.heavy, fontSize: 33.75, lineHeight: 40.5 },
@@ -275,8 +371,8 @@ const styles = StyleSheet.create({
   greetingTitleCompact: { fontSize: 21, lineHeight: 25 },
   header: { alignItems: 'center', flexDirection: 'row', gap: 4, justifyContent: 'space-between' },
   headerGreetingSection: { backgroundColor: colors.background, flexShrink: 0, paddingBottom: spacing.md, paddingHorizontal: spacing.smPlus, paddingTop: 4, zIndex: 10 },
-  hero: { aspectRatio: heroAspectRatio, backgroundColor: colors.secondarySoft, borderColor: colors.surface1, borderRadius: radius.lg, borderWidth: 4, elevation: 5, overflow: 'hidden', padding: spacing.smPlus, position: 'relative', shadowColor: colors.foreground, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 7, width: '100%' },
-  heroArtwork: { ...StyleSheet.absoluteFillObject, height: '100%', width: '100%' },
+  hero: { aspectRatio: heroAspectRatio, backgroundColor: colors.secondarySoft, borderColor: colors.surface1, borderRadius: radius.lg, borderWidth: heroBorderWidth, elevation: 5, overflow: 'hidden', padding: spacing.smPlus, position: 'relative', shadowColor: colors.foreground, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 7, width: '100%' },
+  heroArtwork: { bottom: -heroBorderWidth, left: -heroBorderWidth, position: 'absolute', right: -heroBorderWidth, top: -heroBorderWidth },
   heroAdventure: { color: '#FEC632', fontFamily: typography.fonts.display, fontSize: 34.32, lineHeight: 39.6 },
   heroAdventureCompact: { fontSize: 29.04, lineHeight: 35.2 },
   heroAdventureLead: { marginRight: 5 },

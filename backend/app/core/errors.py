@@ -52,6 +52,12 @@ class ResourceNotFoundError(ApplicationError):
     message = "The requested resource was not found."
 
 
+class ForbiddenError(ApplicationError):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "FORBIDDEN"
+    message = "You are not authorized to access this resource."
+
+
 class ConflictError(ApplicationError):
     status_code = status.HTTP_409_CONFLICT
     code = "CONFLICT"
@@ -109,6 +115,7 @@ def install_error_handlers(application: FastAPI) -> None:
     async def handle_http_error(request: Request, exc: HTTPException) -> JSONResponse:
         known = {
             401: ("AUTHENTICATION_REQUIRED", "Authentication is required."),
+            403: ("FORBIDDEN", "You are not authorized to access this resource."),
             404: ("RESOURCE_NOT_FOUND", "The requested resource was not found."),
             409: ("CONFLICT", "The request conflicts with the current resource state."),
             503: ("SERVICE_UNAVAILABLE", "A required service is unavailable."),

@@ -1,0 +1,165 @@
+{
+  "schema_version": "1.0",
+  "component": "B",
+  "phase": "BE3_PACKAGING",
+  "recorded_at_utc": "2026-07-24T00:00:00Z",
+  "batch_scope": "Packaging and import-boundary work only. No adapter wiring, no application import, no live learner flow, no new scientific parameters. Governed by component-b-live-engine-reuse-map.json and component-b-closure-decisions.json (generator_packaging_decision.selected_strategy = MINIMAL_UPADYA_COMPONENT_B_LIVE_ENGINE_AT_BE3).",
+  "package": {
+    "distribution_name": "upadya-component-b-live-engine",
+    "version": "0.1.0+be3.0e86fdc",
+    "distinct_from_research_distribution": "upadya-component-b-generator (the full research wheel); this package reuses neither its distribution name nor its version, per closure-decisions.json versioning_method.",
+    "python_version_built_with": "3.11.15",
+    "wheel_filename": "upadya_component_b_live_engine-0.1.0+be3.0e86fdc-py3-none-any.whl",
+    "wheel_sha256": "faa5760df1f5a3874f38f8103cdaaa88a14b3190216e46ab21765eee65a70c29",
+    "wheel_repository_path": "backend/provenance/wheels/upadya_component_b_live_engine-0.1.0+be3.0e86fdc-py3-none-any.whl",
+    "source_tree_repository_path": "backend/packaging/component_b_internal",
+    "build_command": "python -m build --wheel --no-isolation --outdir <dist> (setuptools==80.10.2, wheel==0.46.3; isolated Python 3.11.15 venv)",
+    "application_container_installation": "NOT YET WIRED — pinned as a dependency in backend requirements files only (this batch); Dockerfile/adapters are out of scope and are BE3b work. backend/.dockerignore currently excludes provenance/, packaging/, and *.whl from the Docker build context, so an actual image build cannot install this pin until BE3b updates the build context and Dockerfile COPY steps.",
+    "application_code_import": "NONE — no file under backend/app imports this package or any of its modules in this batch."
+  },
+  "pinned_source": {
+    "repository": "Yass",
+    "observed_repository_path": "C:\\Users\\Yasindu\\Desktop\\ResearchProject\\Yass",
+    "git_commit_sha1": "0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b",
+    "verification_method": "git diff 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b -- Implementation_v1.0/component_b_generator Implementation_v1.0/models Implementation_v1.0/validators (read-only), plus per-file byte comparison of every verbatim-copied file in this package against `git show <commit>:<path>`.",
+    "verification_result": "The Yass working tree HEAD (648762a60a4590f714418b36dbd286569ee66c5d at verification time) had DRIFTED from the pinned commit in component_b_generator/aggregation/session.py (a 2026 change to response-time-std handling for <2 timed responses, unrelated to this closure's math). This package was built from the exact pinned-commit blob content via `git show <commit>:<path>`, not from the mutable working tree, so the drift does not affect this package. All 45 verbatim files in this package were confirmed byte-identical to their `git show 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b:<path>` blob content (see verification.verbatim_byte_identity_check below).",
+    "cross_reference_only_not_reproduced": {
+      "note": "component-b-closure-decisions.json and component-b-baseline.json record an existing 'generator_tracked_source_manifest' value (source_manifest_sha256 fd4f052e41539434ad4ff6bbb72fa01815ef750ceeb0a6d8ebc6fbc481e07e2c, tracked_file_count 82) for the FULL pinned generator tree, computed by an undocumented construction. This batch did not reproduce that exact algorithm (its precise path/newline/sort convention is not recorded anywhere in the repository) and does not assert equality with it. Source fidelity to the pinned commit was instead established directly (see verification_method above), which is a stronger guarantee than reproducing an opaque hash. This package's OWN source manifest is documented under package_source_manifest below with its construction spelled out."
+    }
+  },
+  "package_source_manifest": {
+    "algorithm": "SHA-256 of UTF-8 lines '<package-relative-posix-path>\\t<lowercase-sha256-of-file-bytes-as-shipped>\\n', one line per *.py file under backend/packaging/component_b_internal (excluding build/ and *.egg-info/), sorted by path.",
+    "sha256": "4321ebfdb7041a62be8620e857736db4146ae9eb27e78dffd1fd52f44664315f",
+    "file_count": 52,
+    "manifest_file_repository_path": "backend/packaging/component_b_internal/SOURCE_MANIFEST.txt"
+  },
+  "included_capabilities": [
+    "catalogue loading and validation",
+    "activation and grade eligibility",
+    "sequencing features and scoring",
+    "deterministic task construction",
+    "answer normalization and equivalence",
+    "distractor construction",
+    "exact catalogue hint lookup",
+    "BKT prediction, posterior, and update",
+    "Guess-Guard",
+    "certification",
+    "session aggregation"
+  ],
+  "verbatim_files_byte_identical_to_pinned_commit": {
+    "count": 45,
+    "note": "Every file below is byte-identical to `git show 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b:Implementation_v1.0/<same-relative-path>`. No mathematical formula was copied-and-modified or rewritten; these files are unmodified copies.",
+    "files": [
+      "component_b_generator/__init__.py",
+      "component_b_generator/catalogue/__init__.py",
+      "component_b_generator/catalogue/loader.py",
+      "component_b_generator/generation/activation.py",
+      "component_b_generator/generation/errors.py",
+      "component_b_generator/generation/guards.py",
+      "component_b_generator/answers/__init__.py",
+      "component_b_generator/answers/normalization.py",
+      "component_b_generator/answers/registry.py",
+      "component_b_generator/answers/rules.py",
+      "component_b_generator/answers/structured.py",
+      "component_b_generator/distractors/__init__.py",
+      "component_b_generator/distractors/registry.py",
+      "component_b_generator/distractors/rules.py",
+      "component_b_generator/behaviour/hints.py",
+      "component_b_generator/bkt/update.py",
+      "component_b_generator/bkt/guess_guard.py",
+      "component_b_generator/bkt/certification.py",
+      "component_b_generator/bkt/config.py",
+      "component_b_generator/bkt/state.py",
+      "component_b_generator/aggregation/__init__.py",
+      "component_b_generator/aggregation/contracts.py",
+      "component_b_generator/aggregation/session.py",
+      "component_b_generator/models/catalogue.py",
+      "component_b_generator/models/enums.py",
+      "component_b_generator/models/task_instance.py",
+      "component_b_generator/models/opportunity.py",
+      "component_b_generator/models/session.py",
+      "component_b_generator/samplers/__init__.py",
+      "component_b_generator/samplers/base.py",
+      "component_b_generator/samplers/registry.py",
+      "component_b_generator/samplers/addition.py",
+      "component_b_generator/samplers/counting.py",
+      "component_b_generator/samplers/division.py",
+      "component_b_generator/samplers/multiplication.py",
+      "component_b_generator/samplers/number_sense.py",
+      "component_b_generator/samplers/place_value.py",
+      "component_b_generator/samplers/subtraction.py",
+      "component_b_generator/sequencing/config.py",
+      "component_b_generator/sequencing/features.py",
+      "component_b_generator/sequencing/models.py",
+      "component_b_generator/sequencing/score.py",
+      "component_b_generator/seeds.py",
+      "models/__init__.py",
+      "models/contracts.py"
+    ]
+  },
+  "trimmed_files": [
+    {
+      "path": "component_b_generator/generation/task_instances.py",
+      "reason": "The pinned file's `build_task_instance` and `generate_task_instances` bodies are copied byte-identically. Removed: the offline smoke-path entry point `run_phase_b2a`, its provenance-only helpers (_python_version, _git_commit, _timestamp_metadata, PhaseB2AResult), and their unique imports — most importantly `from ..runner import run_phase_b1`, which is the module-level import the reuse map's synthetic_dependency_note for this capability names as the reason a reviewed dependency closure is required. Also removed: unused imports of `..config.loader`, `.coverage`, `.. GENERATOR_PACKAGE_VERSION`, `platform`, `subprocess`, `datetime`, pydantic BaseModel/ConfigDict — none of these are used by the two retained functions."
+    },
+    {
+      "path": "component_b_generator/models/behaviour.py",
+      "reason": "Retains ERROR_PATTERNS, ErrorPattern, HINT_LEVELS, _require_skill, and BOpportunityResponseSummary byte-identical to the pinned file — the only symbols the reviewed closure (behaviour.hints, aggregation.session) needs. Removed the audit-only hidden-truth and synthetic-behaviour-generation classes explicitly named in the reuse map's explicitly_prohibited_from_application list: AuditOnlyModel, BLearnerSkillTruth, BAttemptEvent, BoundedBetaSpec, BoundedNormalSpec, BTruthInitializationConfig, BInitialLearnerSkillTruth, LognormalLatencySpec, BFirstAttemptBehaviourConfig, BAttemptLoopConfig, BOpportunityAttemptResult. Verified none of the retained symbols reference any removed class."
+    },
+    {
+      "path": "component_b_generator/models/__init__.py",
+      "reason": "Pinned file re-exports the hidden-truth/synthetic classes removed from models/behaviour.py above, which would raise ImportError against the trimmed module. Replaced with an empty re-export surface; no required module does a bare `from ..models import X`."
+    },
+    {
+      "path": "component_b_generator/behaviour/__init__.py",
+      "reason": "Pinned file eagerly imports .attempt_loop, .first_attempt, .latency, .initialization, .wrong_answers, .derivation, .seeds, .validation — all explicitly prohibited synthetic/offline learner-response modules. None of those files are included in this package. Replaced with an empty re-export surface; callers import component_b_generator.behaviour.hints directly."
+    },
+    {
+      "path": "component_b_generator/bkt/__init__.py",
+      "reason": "Pinned file also imports .orchestrator (update_skill_mastery, SkillMismatchError), which is not part of the reviewed capability closure and is not included. Replaced with an empty re-export surface; callers import component_b_generator.bkt.update/.guess_guard/.certification/.config/.state directly."
+    },
+    {
+      "path": "component_b_generator/generation/__init__.py",
+      "reason": "Pinned file imports .item_opportunities, which imports ..cohort.builder.CohortMember — cohort construction is explicitly prohibited. .item_opportunities and cohort/* are not included. Replaced with an empty re-export surface."
+    },
+    {
+      "path": "component_b_generator/sequencing/__init__.py",
+      "reason": "Pinned file also imports .eligibility and .select_item, neither of which is part of the reviewed capability closure (only compute_features/score_candidate/rank_candidates/select_target from .features/.score are required). Neither file is included. Replaced with an empty re-export surface."
+    }
+  ],
+  "excluded_by_omission": {
+    "note": "The following pinned-source files/packages are not present anywhere in this package, so they are unreachable by construction (ModuleNotFoundError on any import attempt), not merely unimported.",
+    "modules": [
+      "component_b_generator.cohort (and cohort/*)",
+      "component_b_generator.behaviour.first_attempt",
+      "component_b_generator.behaviour.latency",
+      "component_b_generator.behaviour.attempt_loop",
+      "component_b_generator.behaviour.initialization",
+      "component_b_generator.behaviour.wrong_answers",
+      "component_b_generator.behaviour.derivation",
+      "component_b_generator.behaviour.seeds",
+      "component_b_generator.behaviour.validation",
+      "component_b_generator.pipeline",
+      "component_b_generator.pilot",
+      "component_b_generator.runner",
+      "component_b_generator.audits (and audits/*)",
+      "component_b_generator.generation.item_opportunities",
+      "component_b_generator.generation.coverage",
+      "component_b_generator.sequencing.eligibility",
+      "component_b_generator.sequencing.select_item",
+      "component_b_generator.bkt.orchestrator",
+      "component_b_generator.config (and config/*)",
+      "component_b_generator.adapters (and adapters/*)",
+      "validators (and validators/*)"
+    ]
+  },
+  "verification": {
+    "environment": "isolated venv built from C:\\tmp\\component-b-be0-py311-20260722\\python.exe (CPython 3.11.15), dependencies pydantic==2.13.4 and PyYAML==6.0.3 only",
+    "verbatim_byte_identity_check": "PASSED — all 45 verbatim files in the built package tree are byte-identical to `git show 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b:<path>` for their pinned-commit counterpart.",
+    "capability_symbol_import_check": "PASSED — all functions/classes named in the 11 capability entries of component-b-live-engine-reuse-map.json import successfully from the installed wheel.",
+    "prohibited_module_unreachability_check": "PASSED — importlib.import_module raises ModuleNotFoundError for component_b_generator.cohort, .cohort.builder, .behaviour.first_attempt, .behaviour.latency, .behaviour.attempt_loop, .pipeline, .pilot, .runner, .audits (and its submodules), .generation.item_opportunities.",
+    "hidden_truth_class_absence_check": "PASSED — AuditOnlyModel, BLearnerSkillTruth, BAttemptEvent, BoundedBetaSpec, BoundedNormalSpec, BTruthInitializationConfig, BInitialLearnerSkillTruth, LognormalLatencySpec, BFirstAttemptBehaviourConfig, BAttemptLoopConfig, and BOpportunityAttemptResult are absent from component_b_generator.models.behaviour in the installed wheel.",
+    "determinism_smoke_check": "PASSED — repeated calls to bkt_predict/bkt_posterior/bkt_update with identical fixed inputs returned identical outputs.",
+    "backend_test_file": "backend/tests/test_be3_live_engine_boundary.py"
+  }
+}

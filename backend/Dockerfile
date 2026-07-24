@@ -3,7 +3,7 @@ FROM python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a7
 
 LABEL org.opencontainers.image.title="Upadya Backend API" \
       org.opencontainers.image.description="BE1 infrastructure-only FastAPI foundation" \
-      org.opencontainers.image.version="0.1.0-be1.2" \
+      org.opencontainers.image.version="0.1.0-be1.3" \
       org.opencontainers.image.base.name="docker.io/library/python:3.11.15-slim-bookworm"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

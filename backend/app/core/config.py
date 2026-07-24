@@ -15,6 +15,11 @@ class Settings:
     database_url: str
     log_level: str
     cors_allowed_origins: tuple[str, ...]
+    supabase_url: str
+    supabase_jwt_issuer: str
+    supabase_jwt_audience: str | None
+    supabase_jwks_url: str
+    supabase_jwks_cache_ttl_seconds: int
 
     @property
     def database_endpoint(self) -> tuple[str, int]:
@@ -33,11 +38,18 @@ def get_settings() -> Settings:
     )
     return Settings(
         app_env=getenv("APP_ENV", "development"),
-        backend_code_version=getenv("BACKEND_CODE_VERSION", "0.1.0-be1.2"),
+        backend_code_version=getenv("BACKEND_CODE_VERSION", "0.1.0-be1.3"),
         database_url=getenv(
             "DATABASE_URL",
             "postgresql://upadya:local-development-only@db:5432/upadya",
         ),
         log_level=getenv("LOG_LEVEL", "INFO").upper(),
         cors_allowed_origins=origins,
+        supabase_url=getenv("SUPABASE_URL", ""),
+        supabase_jwt_issuer=getenv("SUPABASE_JWT_ISSUER", ""),
+        supabase_jwt_audience=getenv("SUPABASE_JWT_AUDIENCE") or None,
+        supabase_jwks_url=getenv("SUPABASE_JWKS_URL", ""),
+        supabase_jwks_cache_ttl_seconds=max(
+            30, min(int(getenv("SUPABASE_JWKS_CACHE_TTL_SECONDS", "300")), 3600)
+        ),
     )

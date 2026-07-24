@@ -10,7 +10,11 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.b_session import router as b_session_router
+from app.api.routes.classroom_membership import router as classroom_membership_router
 from app.api.routes.health import router as health_router
+from app.api.routes.identity import router as identity_router
+from app.api.routes.profile_classroom import router as profile_classroom_router
 from app.core.config import get_settings
 from app.core.errors import error_response, install_error_handlers
 from app.core.logging import configure_logging, request_log_fields
@@ -50,8 +54,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=list(settings.cors_allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"],
     )
 
     @application.middleware("http")
@@ -102,6 +106,10 @@ def create_app() -> FastAPI:
         return response
 
     application.include_router(health_router)
+    application.include_router(identity_router)
+    application.include_router(profile_classroom_router)
+    application.include_router(classroom_membership_router)
+    application.include_router(b_session_router)
     return application
 
 

@@ -28,7 +28,20 @@ function createFixtureApi(fixture: string): ComponentBApi {
       if (fixture === 'readiness-failure') {
         throw new ApiClientError('unavailable', 'Development readiness fixture is unavailable.', 503, 'dev-ready-503');
       }
-      return { status: 'ready', request_id: 'dev-ready-ok' };
+      return {
+        status: 'ready',
+        stage: 'infrastructure',
+        request_id: 'dev-ready-ok',
+        checks: {
+          api_process: 'ok',
+          database_connection: 'ok',
+          generator: 'not_checked',
+          catalogue: 'not_checked',
+          runtime_bundle: 'not_checked',
+          migrations: 'not_checked',
+          authentication: 'not_checked',
+        },
+      };
     },
     async startSession(_request, idempotencyKey) {
       await fixtureDelay();
@@ -63,6 +76,9 @@ export function createComponentBApi(config?: PublicConfig): ComponentBApi {
 
   return {
     checkReadiness: () => requestJson(config, { method: 'GET', path: '/health/ready', validate: isHealthReadyResponse }),
+    // Not yet BE5-step-5 wired: the live POST /api/v1/b/sessions takes no request body and
+    // returns SessionCommandResponse, not this fixture-shaped StartSessionResponse — see the
+    // note on StartSessionResponse in contracts.ts.
     startSession: (body, idempotencyKey, accessToken) =>
       requestJson(config, {
         accessToken,

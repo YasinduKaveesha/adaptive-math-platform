@@ -1,0 +1,2622 @@
+{
+  "components": {
+    "schemas": {
+      "ActiveSessionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionFields"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "session",
+          "request_id"
+        ],
+        "title": "ActiveSessionResponse",
+        "type": "object"
+      },
+      "AttemptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_index": {
+            "title": "Attempt Index",
+            "type": "integer"
+          },
+          "event_kind": {
+            "enum": [
+              "RESPONSE",
+              "TIMEOUT"
+            ],
+            "title": "Event Kind",
+            "type": "string"
+          },
+          "item_opportunity_id": {
+            "format": "uuid",
+            "title": "Item Opportunity Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "response_matched": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Matched"
+          },
+          "server_submitted_at_utc": {
+            "format": "date-time",
+            "title": "Server Submitted At Utc",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_opportunity_id",
+          "attempt_index",
+          "event_kind",
+          "response_matched",
+          "server_submitted_at_utc",
+          "request_id"
+        ],
+        "title": "AttemptResponse",
+        "type": "object"
+      },
+      "AuthenticatedPrincipal": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "AuthenticatedPrincipal",
+        "type": "object"
+      },
+      "ClassroomCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "grade": {
+            "enum": [
+              "GRADE_2",
+              "GRADE_3"
+            ],
+            "title": "Grade",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "grade"
+        ],
+        "title": "ClassroomCreateRequest",
+        "type": "object"
+      },
+      "ClassroomLearnerListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "learner_id": {
+            "format": "uuid",
+            "title": "Learner Id",
+            "type": "string"
+          },
+          "membership_id": {
+            "format": "uuid",
+            "title": "Membership Id",
+            "type": "string"
+          },
+          "membership_state": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "title": "Membership State",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "learner_id",
+          "name",
+          "membership_id",
+          "membership_state"
+        ],
+        "title": "ClassroomLearnerListItem",
+        "type": "object"
+      },
+      "ClassroomLearnerListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "learners": {
+            "items": {
+              "$ref": "#/components/schemas/ClassroomLearnerListItem"
+            },
+            "title": "Learners",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "learners",
+          "request_id"
+        ],
+        "title": "ClassroomLearnerListResponse",
+        "type": "object"
+      },
+      "ClassroomListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_id": {
+            "format": "uuid",
+            "title": "Classroom Id",
+            "type": "string"
+          },
+          "created_at_utc": {
+            "format": "date-time",
+            "title": "Created At Utc",
+            "type": "string"
+          },
+          "grade": {
+            "enum": [
+              "GRADE_2",
+              "GRADE_3"
+            ],
+            "title": "Grade",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "classroom_id",
+          "name",
+          "grade",
+          "created_at_utc",
+          "row_version"
+        ],
+        "title": "ClassroomListItem",
+        "type": "object"
+      },
+      "ClassroomListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classrooms": {
+            "items": {
+              "$ref": "#/components/schemas/ClassroomListItem"
+            },
+            "title": "Classrooms",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "classrooms",
+          "request_id"
+        ],
+        "title": "ClassroomListResponse",
+        "type": "object"
+      },
+      "ClassroomResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_id": {
+            "format": "uuid",
+            "title": "Classroom Id",
+            "type": "string"
+          },
+          "created_at_utc": {
+            "format": "date-time",
+            "title": "Created At Utc",
+            "type": "string"
+          },
+          "grade": {
+            "enum": [
+              "GRADE_2",
+              "GRADE_3"
+            ],
+            "title": "Grade",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          },
+          "teacher_profile_id": {
+            "format": "uuid",
+            "title": "Teacher Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "classroom_id",
+          "name",
+          "grade",
+          "teacher_profile_id",
+          "created_at_utc",
+          "row_version",
+          "request_id"
+        ],
+        "title": "ClassroomResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "additionalProperties": false,
+        "description": "Public health-check response.",
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "alive",
+              "ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "request_id"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "HintRequestResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "catalogue_checksum": {
+            "title": "Catalogue Checksum",
+            "type": "string"
+          },
+          "catalogue_version": {
+            "title": "Catalogue Version",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "content_id": {
+            "title": "Content Id",
+            "type": "string"
+          },
+          "hint_level": {
+            "title": "Hint Level",
+            "type": "integer"
+          },
+          "item_opportunity_id": {
+            "format": "uuid",
+            "title": "Item Opportunity Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_opportunity_id",
+          "hint_level",
+          "content",
+          "content_id",
+          "catalogue_version",
+          "catalogue_checksum",
+          "request_id"
+        ],
+        "title": "HintRequestResponse",
+        "type": "object"
+      },
+      "InviteCreateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_invite_id": {
+            "format": "uuid",
+            "title": "Classroom Invite Id",
+            "type": "string"
+          },
+          "created_at_utc": {
+            "format": "date-time",
+            "title": "Created At Utc",
+            "type": "string"
+          },
+          "expires_at_utc": {
+            "format": "date-time",
+            "title": "Expires At Utc",
+            "type": "string"
+          },
+          "invite_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Plaintext classroom join code (e.g. 'M7KP-4X9D'). Present only in the first successful response for a given invite; never re-exposed on replay.",
+            "title": "Invite Token"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "token_already_issued": {
+            "description": "True when this response is a replay of an already-committed invite creation.",
+            "title": "Token Already Issued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "classroom_invite_id",
+          "invite_token",
+          "token_already_issued",
+          "expires_at_utc",
+          "created_at_utc",
+          "request_id"
+        ],
+        "title": "InviteCreateResponse",
+        "type": "object"
+      },
+      "InviteResolveResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classroom Name"
+          },
+          "grade": {
+            "enum": [
+              "GRADE_2",
+              "GRADE_3"
+            ],
+            "title": "Grade",
+            "type": "string"
+          },
+          "invite_resolution_id": {
+            "format": "uuid",
+            "title": "Invite Resolution Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invite_resolution_id",
+          "classroom_name",
+          "grade",
+          "request_id"
+        ],
+        "title": "InviteResolveResponse",
+        "type": "object"
+      },
+      "InviteRevokeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_id": {
+            "format": "uuid",
+            "title": "Classroom Id",
+            "type": "string"
+          },
+          "classroom_invite_id": {
+            "format": "uuid",
+            "title": "Classroom Invite Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "revoked_at_utc": {
+            "format": "date-time",
+            "title": "Revoked At Utc",
+            "type": "string"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "classroom_invite_id",
+          "classroom_id",
+          "revoked_at_utc",
+          "row_version",
+          "request_id"
+        ],
+        "title": "InviteRevokeResponse",
+        "type": "object"
+      },
+      "InviteTokenRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "invite_token": {
+            "description": "Classroom join code as displayed to the teacher. Matching is case-insensitive and ignores optional display separators such as hyphens or spaces.",
+            "title": "Invite Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invite_token"
+        ],
+        "title": "InviteTokenRequest",
+        "type": "object"
+      },
+      "LearnerMembershipListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_id": {
+            "format": "uuid",
+            "title": "Classroom Id",
+            "type": "string"
+          },
+          "classroom_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classroom Name"
+          },
+          "decided_at_utc": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At Utc"
+          },
+          "grade": {
+            "enum": [
+              "GRADE_2",
+              "GRADE_3"
+            ],
+            "title": "Grade",
+            "type": "string"
+          },
+          "membership_id": {
+            "format": "uuid",
+            "title": "Membership Id",
+            "type": "string"
+          },
+          "requested_at_utc": {
+            "format": "date-time",
+            "title": "Requested At Utc",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "membership_id",
+          "classroom_id",
+          "classroom_name",
+          "grade",
+          "state",
+          "requested_at_utc",
+          "decided_at_utc"
+        ],
+        "title": "LearnerMembershipListItem",
+        "type": "object"
+      },
+      "LearnerMembershipListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "memberships": {
+            "items": {
+              "$ref": "#/components/schemas/LearnerMembershipListItem"
+            },
+            "title": "Memberships",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memberships",
+          "request_id"
+        ],
+        "title": "LearnerMembershipListResponse",
+        "type": "object"
+      },
+      "LearnerProfileResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at_utc": {
+            "format": "date-time",
+            "title": "Created At Utc",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "learner_id": {
+            "format": "uuid",
+            "title": "Learner Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "profile_type": {
+            "const": "LEARNER",
+            "title": "Profile Type",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "learner_id",
+          "user_id",
+          "profile_type",
+          "name",
+          "email",
+          "created_at_utc",
+          "request_id"
+        ],
+        "title": "LearnerProfileResponse",
+        "type": "object"
+      },
+      "MembershipDecisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_id": {
+            "format": "uuid",
+            "title": "Classroom Id",
+            "type": "string"
+          },
+          "classroom_membership_id": {
+            "format": "uuid",
+            "title": "Classroom Membership Id",
+            "type": "string"
+          },
+          "decided_at_utc": {
+            "format": "date-time",
+            "title": "Decided At Utc",
+            "type": "string"
+          },
+          "learner_id": {
+            "format": "uuid",
+            "title": "Learner Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "classroom_membership_id",
+          "classroom_id",
+          "learner_id",
+          "state",
+          "decided_at_utc",
+          "row_version",
+          "request_id"
+        ],
+        "title": "MembershipDecisionResponse",
+        "type": "object"
+      },
+      "MembershipRequestListItem": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_membership_id": {
+            "format": "uuid",
+            "title": "Classroom Membership Id",
+            "type": "string"
+          },
+          "decided_at_utc": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At Utc"
+          },
+          "learner_id": {
+            "format": "uuid",
+            "title": "Learner Id",
+            "type": "string"
+          },
+          "learner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Learner Name"
+          },
+          "requested_at_utc": {
+            "format": "date-time",
+            "title": "Requested At Utc",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "classroom_membership_id",
+          "learner_id",
+          "learner_name",
+          "state",
+          "requested_at_utc",
+          "decided_at_utc"
+        ],
+        "title": "MembershipRequestListItem",
+        "type": "object"
+      },
+      "MembershipRequestListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/MembershipRequestListItem"
+            },
+            "title": "Requests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "requests",
+          "request_id"
+        ],
+        "title": "MembershipRequestListResponse",
+        "type": "object"
+      },
+      "MembershipRequestResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_id": {
+            "format": "uuid",
+            "title": "Classroom Id",
+            "type": "string"
+          },
+          "classroom_membership_id": {
+            "format": "uuid",
+            "title": "Classroom Membership Id",
+            "type": "string"
+          },
+          "classroom_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classroom Name"
+          },
+          "grade": {
+            "enum": [
+              "GRADE_2",
+              "GRADE_3"
+            ],
+            "title": "Grade",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requested_at_utc": {
+            "format": "date-time",
+            "title": "Requested At Utc",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "classroom_membership_id",
+          "classroom_id",
+          "classroom_name",
+          "grade",
+          "state",
+          "requested_at_utc",
+          "request_id"
+        ],
+        "title": "MembershipRequestResponse",
+        "type": "object"
+      },
+      "OpportunityAdvanceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "item_opportunity_id": {
+            "format": "uuid",
+            "title": "Item Opportunity Id",
+            "type": "string"
+          },
+          "next_opportunity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityPresentationFields"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "opportunities_completed": {
+            "title": "Opportunities Completed",
+            "type": "integer"
+          },
+          "opportunities_total_bound": {
+            "title": "Opportunities Total Bound",
+            "type": "integer"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "session_state": {
+            "enum": [
+              "active",
+              "completed"
+            ],
+            "title": "Session State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_opportunity_id",
+          "session_state",
+          "opportunities_completed",
+          "opportunities_total_bound",
+          "next_opportunity",
+          "request_id"
+        ],
+        "title": "OpportunityAdvanceResponse",
+        "type": "object"
+      },
+      "OpportunityPresentationFields": {
+        "additionalProperties": false,
+        "description": "BE4b (BEplan \u00a79 BE4.2) public response shape \u2014 an explicit, field-by-field mirror of\n``PresentedOpportunity`` (never ``**PresentedOpportunity.to_public_dict()``), so the FastAPI\nresponse schema and the safe-DTO allow-list are two independently-written descriptions of the\nsame safe field set rather than one generated from the other.",
+        "properties": {
+          "difficulty_level": {
+            "title": "Difficulty Level",
+            "type": "string"
+          },
+          "grade": {
+            "title": "Grade",
+            "type": "integer"
+          },
+          "item_instance_id": {
+            "title": "Item Instance Id",
+            "type": "string"
+          },
+          "item_opportunity_id": {
+            "title": "Item Opportunity Id",
+            "type": "string"
+          },
+          "presentation_token": {
+            "title": "Presentation Token",
+            "type": "string"
+          },
+          "presented_choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Presented Choices",
+            "type": "array"
+          },
+          "prompt": {
+            "additionalProperties": true,
+            "title": "Prompt",
+            "type": "object"
+          },
+          "representation_type": {
+            "title": "Representation Type",
+            "type": "string"
+          },
+          "response_format": {
+            "title": "Response Format",
+            "type": "string"
+          },
+          "server_timeout_deadline_utc": {
+            "format": "date-time",
+            "title": "Server Timeout Deadline Utc",
+            "type": "string"
+          },
+          "skill_id": {
+            "title": "Skill Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_opportunity_id",
+          "item_instance_id",
+          "skill_id",
+          "grade",
+          "difficulty_level",
+          "representation_type",
+          "response_format",
+          "prompt",
+          "presented_choices",
+          "presentation_token",
+          "server_timeout_deadline_utc"
+        ],
+        "title": "OpportunityPresentationFields",
+        "type": "object"
+      },
+      "OpportunityPresentationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "difficulty_level": {
+            "title": "Difficulty Level",
+            "type": "string"
+          },
+          "grade": {
+            "title": "Grade",
+            "type": "integer"
+          },
+          "item_instance_id": {
+            "title": "Item Instance Id",
+            "type": "string"
+          },
+          "item_opportunity_id": {
+            "title": "Item Opportunity Id",
+            "type": "string"
+          },
+          "presentation_token": {
+            "title": "Presentation Token",
+            "type": "string"
+          },
+          "presented_choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Presented Choices",
+            "type": "array"
+          },
+          "prompt": {
+            "additionalProperties": true,
+            "title": "Prompt",
+            "type": "object"
+          },
+          "representation_type": {
+            "title": "Representation Type",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "response_format": {
+            "title": "Response Format",
+            "type": "string"
+          },
+          "server_timeout_deadline_utc": {
+            "format": "date-time",
+            "title": "Server Timeout Deadline Utc",
+            "type": "string"
+          },
+          "skill_id": {
+            "title": "Skill Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_opportunity_id",
+          "item_instance_id",
+          "skill_id",
+          "grade",
+          "difficulty_level",
+          "representation_type",
+          "response_format",
+          "prompt",
+          "presented_choices",
+          "presentation_token",
+          "server_timeout_deadline_utc",
+          "request_id"
+        ],
+        "title": "OpportunityPresentationResponse",
+        "type": "object"
+      },
+      "ProfileCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProfileCreateRequest",
+        "type": "object"
+      },
+      "ReadinessResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Checks",
+            "type": "object"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "stage": {
+            "const": "infrastructure",
+            "title": "Stage",
+            "type": "string"
+          },
+          "status": {
+            "const": "ready",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "stage",
+          "request_id",
+          "checks"
+        ],
+        "title": "ReadinessResponse",
+        "type": "object"
+      },
+      "SessionCommandResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at_utc": {
+            "format": "date-time",
+            "title": "Created At Utc",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          },
+          "runtime_bundle_version": {
+            "title": "Runtime Bundle Version",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "completed",
+              "abandoned"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "state",
+          "runtime_bundle_version",
+          "created_at_utc",
+          "row_version",
+          "request_id"
+        ],
+        "title": "SessionCommandResponse",
+        "type": "object"
+      },
+      "SessionFields": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at_utc": {
+            "format": "date-time",
+            "title": "Created At Utc",
+            "type": "string"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          },
+          "runtime_bundle_version": {
+            "title": "Runtime Bundle Version",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "completed",
+              "abandoned"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "state",
+          "runtime_bundle_version",
+          "created_at_utc",
+          "row_version"
+        ],
+        "title": "SessionFields",
+        "type": "object"
+      },
+      "SessionStandingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "opportunities_completed": {
+            "title": "Opportunities Completed",
+            "type": "integer"
+          },
+          "opportunities_total_bound": {
+            "title": "Opportunities Total Bound",
+            "type": "integer"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "session_state": {
+            "enum": [
+              "active",
+              "completed"
+            ],
+            "title": "Session State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "session_state",
+          "opportunities_completed",
+          "opportunities_total_bound",
+          "request_id"
+        ],
+        "title": "SessionStandingResponse",
+        "type": "object"
+      },
+      "SubmitResponseRequest": {
+        "additionalProperties": false,
+        "description": "Strict, size-capped request shape. ``client_elapsed_ms`` is TELEMETRY ONLY \u2014 never read\nfor correctness or BKT; server timestamps are authoritative.",
+        "properties": {
+          "client_elapsed_ms": {
+            "anyOf": [
+              {
+                "maximum": 3600000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Elapsed Ms"
+          },
+          "submitted_value": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Submitted Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "submitted_value"
+        ],
+        "title": "SubmitResponseRequest",
+        "type": "object"
+      },
+      "TeacherProfileResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at_utc": {
+            "format": "date-time",
+            "title": "Created At Utc",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "profile_type": {
+            "const": "TEACHER",
+            "title": "Profile Type",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "teacher_profile_id": {
+            "format": "uuid",
+            "title": "Teacher Profile Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "teacher_profile_id",
+          "user_id",
+          "profile_type",
+          "name",
+          "email",
+          "created_at_utc",
+          "request_id"
+        ],
+        "title": "TeacherProfileResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Adaptive Math Platform - Component B API",
+    "version": "0.1.0-be1.3"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/b/sessions": {
+      "post": {
+        "operationId": "start_session_api_v1_b_sessions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Session",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/active": {
+      "get": {
+        "operationId": "get_active_session_api_v1_b_sessions_active_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Active Session",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/{session_id}/abandon": {
+      "post": {
+        "operationId": "abandon_session_api_v1_b_sessions__session_id__abandon_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Abandon Session",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/{session_id}/complete": {
+      "post": {
+        "operationId": "complete_session_api_v1_b_sessions__session_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Session",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/{session_id}/opportunities": {
+      "post": {
+        "operationId": "select_opportunity_api_v1_b_sessions__session_id__opportunities_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityPresentationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Opportunity",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/assists": {
+      "post": {
+        "operationId": "request_assist_api_v1_b_sessions__session_id__opportunities__item_opportunity_id__assists_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HintRequestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Assist",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/complete": {
+      "post": {
+        "operationId": "complete_opportunity_api_v1_b_sessions__session_id__opportunities__item_opportunity_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityAdvanceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Opportunity",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/responses": {
+      "post": {
+        "operationId": "submit_response_api_v1_b_sessions__session_id__opportunities__item_opportunity_id__responses_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_opportunity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitResponseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Response",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/b/sessions/{session_id}/summary": {
+      "get": {
+        "operationId": "get_session_summary_api_v1_b_sessions__session_id__summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStandingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session Summary",
+        "tags": [
+          "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/classroom-invites/resolve": {
+      "post": {
+        "operationId": "resolve_invite_api_v1_classroom_invites_resolve_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteResolveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Invite",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/classroom-invites/{classroom_invite_id}/revoke": {
+      "post": {
+        "operationId": "revoke_invite_api_v1_classroom_invites__classroom_invite_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "classroom_invite_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Classroom Invite Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteRevokeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Invite",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/classroom-memberships/requests": {
+      "post": {
+        "operationId": "request_membership_api_v1_classroom_memberships_requests_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipRequestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Membership",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/classroom-memberships/{membership_id}/approve": {
+      "post": {
+        "operationId": "approve_membership_api_v1_classroom_memberships__membership_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Membership Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipDecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Membership",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/classroom-memberships/{membership_id}/reject": {
+      "post": {
+        "operationId": "reject_membership_api_v1_classroom_memberships__membership_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Membership Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipDecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Membership",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/classrooms": {
+      "get": {
+        "operationId": "list_classrooms_api_v1_classrooms_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassroomListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Classrooms",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      },
+      "post": {
+        "operationId": "create_classroom_api_v1_classrooms_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassroomCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassroomResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Classroom",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      }
+    },
+    "/api/v1/classrooms/{classroom_id}": {
+      "get": {
+        "operationId": "get_classroom_api_v1_classrooms__classroom_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "classroom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Classroom Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassroomResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Classroom",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      }
+    },
+    "/api/v1/classrooms/{classroom_id}/invites": {
+      "post": {
+        "operationId": "create_invite_api_v1_classrooms__classroom_id__invites_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "classroom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Classroom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteCreateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Invite",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/classrooms/{classroom_id}/learners": {
+      "get": {
+        "operationId": "list_classroom_learners_api_v1_classrooms__classroom_id__learners_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "classroom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Classroom Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassroomLearnerListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Classroom Learners",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/classrooms/{classroom_id}/membership-requests": {
+      "get": {
+        "operationId": "list_membership_requests_api_v1_classrooms__classroom_id__membership_requests_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "classroom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Classroom Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipRequestListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Membership Requests",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/learner/classrooms": {
+      "get": {
+        "operationId": "list_learner_classrooms_api_v1_learner_classrooms_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearnerMembershipListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Learner Classrooms",
+        "tags": [
+          "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/learner/profile": {
+      "get": {
+        "operationId": "get_learner_profile_api_v1_learner_profile_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearnerProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Learner Profile",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      },
+      "post": {
+        "operationId": "create_learner_profile_api_v1_learner_profile_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearnerProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Learner Profile",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "operationId": "current_identity_api_v1_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatedPrincipal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Current Identity",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/teacher/profile": {
+      "get": {
+        "operationId": "get_teacher_profile_api_v1_teacher_profile_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeacherProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Teacher Profile",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      },
+      "post": {
+        "operationId": "create_teacher_profile_api_v1_teacher_profile_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeacherProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Teacher Profile",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      }
+    },
+    "/health/live": {
+      "get": {
+        "description": "Report that the API process is running.",
+        "operationId": "liveness_health_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Verify the implemented SQLAlchemy-to-PostgreSQL dependency.",
+        "operationId": "readiness_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}

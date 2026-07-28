@@ -1,15 +1,17 @@
 """SQLAlchemy repositories for the twelve neutral BE2 tables."""
 
-from typing import Generic, TypeVar
+from typing import Generic, Sequence, TypeVar
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence_models import (
-    AppUser, AppUserLearnerLink, AuditEvent, Base, Classroom, ClassroomInvite,
-    ClassroomMembership, IdempotencyRecord, Learner, RuntimeBundleRecord,
-    SessionEvent, SessionRecord, TeacherProfile,
+    AppUser, AppUserLearnerLink, AttemptRecord, AuditEvent, Base, Classroom, ClassroomInvite,
+    ClassroomMembership, HintEventRecord, IdempotencyRecord, ItemOpportunityRecord, Learner,
+    LearnerSkillStateRecord, PresentationTokenRecord, RuntimeBundleRecord,
+    SessionAggregateResultRecord, SessionEvent, SessionRecord, SkillCertificationResultRecord,
+    SkillStateTransitionRecord, TaskInstanceRecord, TeacherProfile,
 )
 
 
@@ -217,3 +219,179 @@ class ClassroomMembershipRepository(SqlAlchemyNeutralRepository[ClassroomMembers
         )
         result = await self.session.execute(statement)
         return list(result.all())
+
+
+class ItemOpportunityRepository(SqlAlchemyNeutralRepository[ItemOpportunityRecord]):
+    model_type = ItemOpportunityRecord
+
+    async def find_open_for_session(self, session_id: UUID) -> ItemOpportunityRecord | None:
+        return await self.session.scalar(
+            select(ItemOpportunityRecord).where(
+                ItemOpportunityRecord.session_id == session_id,
+                ItemOpportunityRecord.state == "OPEN",
+            )
+        )
+
+    async def get_owned(self, item_opportunity_id: UUID, learner_id: UUID) -> ItemOpportunityRecord | None:
+        return await self.session.scalar(
+            select(ItemOpportunityRecord).where(
+                ItemOpportunityRecord.item_opportunity_id == item_opportunity_id,
+                ItemOpportunityRecord.learner_id == learner_id,
+            )
+        )
+
+    async def count_for_session(self, session_id: UUID) -> int:
+        return await self.session.scalar(
+            select(func.count()).select_from(ItemOpportunityRecord).where(ItemOpportunityRecord.session_id == session_id)
+        )
+
+    async def get_for_update(self, item_opportunity_id: UUID) -> ItemOpportunityRecord | None:
+        """Row-locks the opportunity so attempt-index derivation and the OPEN-state check are
+        race-free under concurrent submissions (BEplan §9 BE4.3 step 4)."""
+        return await self.session.scalar(
+            select(ItemOpportunityRecord)
+            .where(ItemOpportunityRecord.item_opportunity_id == item_opportunity_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    async def count_closed_for_session(self, session_id: UUID) -> int:
+        """BE4e (BEplan §9 BE4.6): count of CLOSED-only opportunities — used by the SAFE
+        standing view so an in-progress (still-OPEN) opportunity is never counted as
+        completed."""
+        return await self.session.scalar(
+            select(func.count())
+            .select_from(ItemOpportunityRecord)
+            .where(ItemOpportunityRecord.session_id == session_id, ItemOpportunityRecord.state == "CLOSED")
+        )
+
+    async def list_for_session(self, session_id: UUID) -> list[ItemOpportunityRecord]:
+        """BE4e (BEplan §9 BE4.6): every opportunity row for a session, ordered deterministically,
+        used to build the session-aggregation input set."""
+        result = await self.session.scalars(
+            select(ItemOpportunityRecord)
+            .where(ItemOpportunityRecord.session_id == session_id)
+            .order_by(ItemOpportunityRecord.opportunity_index)
+        )
+        return list(result)
+
+
+class TaskInstanceRepository(SqlAlchemyNeutralRepository[TaskInstanceRecord]):
+    model_type = TaskInstanceRecord
+
+    async def find_by_opportunity(self, item_opportunity_id: UUID) -> TaskInstanceRecord | None:
+        return await self.session.scalar(
+            select(TaskInstanceRecord).where(TaskInstanceRecord.item_opportunity_id == item_opportunity_id)
+        )
+
+
+class PresentationTokenRepository(SqlAlchemyNeutralRepository[PresentationTokenRecord]):
+    model_type = PresentationTokenRecord
+
+    async def find_by_token_hash(self, token_hash: str) -> PresentationTokenRecord | None:
+        return await self.session.scalar(
+            select(PresentationTokenRecord).where(PresentationTokenRecord.token_hash == token_hash)
+        )
+
+
+class LearnerSkillStateRepository(SqlAlchemyNeutralRepository[LearnerSkillStateRecord]):
+    model_type = LearnerSkillStateRecord
+
+    async def list_for_learner(self, learner_id: UUID) -> list[LearnerSkillStateRecord]:
+        result = await self.session.scalars(
+            select(LearnerSkillStateRecord).where(LearnerSkillStateRecord.learner_id == learner_id)
+        )
+        return list(result)
+
+    async def get_for_update(self, learner_id: UUID, skill_id: str) -> LearnerSkillStateRecord | None:
+        """``populate_existing=True`` is required: BE4b's selection step may already have loaded
+        this row into the session identity map earlier in the same request; without it SQLAlchemy
+        would keep those stale pre-lock attributes instead of refreshing from this FOR UPDATE
+        read (the same identity-map staleness hazard BE4c's spec calls out from the
+        approve_membership carry-forward)."""
+        return await self.session.scalar(
+            select(LearnerSkillStateRecord)
+            .where(LearnerSkillStateRecord.learner_id == learner_id, LearnerSkillStateRecord.skill_id == skill_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+
+class AttemptRepository(SqlAlchemyNeutralRepository[AttemptRecord]):
+    model_type = AttemptRecord
+
+    async def count_for_opportunity(self, item_opportunity_id: UUID) -> int:
+        return await self.session.scalar(
+            select(func.count()).select_from(AttemptRecord).where(AttemptRecord.item_opportunity_id == item_opportunity_id)
+        )
+
+    async def list_for_opportunity(self, item_opportunity_id: UUID) -> list[AttemptRecord]:
+        """BE4e (BEplan §9 BE4.6): every attempt/timeout event for one opportunity, ordered by
+        ``attempt_index``, used to derive the opportunity-level aggregation summary."""
+        result = await self.session.scalars(
+            select(AttemptRecord)
+            .where(AttemptRecord.item_opportunity_id == item_opportunity_id)
+            .order_by(AttemptRecord.attempt_index)
+        )
+        return list(result)
+
+
+class SkillStateTransitionRepository(SqlAlchemyNeutralRepository[SkillStateTransitionRecord]):
+    """No update/delete method is defined here by design — transitions are immutable (BEplan
+    §9 BE4.4)."""
+
+    model_type = SkillStateTransitionRecord
+
+    async def find_by_opportunity(self, item_opportunity_id: UUID) -> SkillStateTransitionRecord | None:
+        return await self.session.scalar(
+            select(SkillStateTransitionRecord).where(SkillStateTransitionRecord.item_opportunity_id == item_opportunity_id)
+        )
+
+    async def list_for_opportunities(self, item_opportunity_ids: Sequence[UUID]) -> list[SkillStateTransitionRecord]:
+        """BE4e (BEplan §9 BE4.6): every first-attempt BKT transition across a set of
+        opportunities (one session's), used to build the aggregation's
+        ``SkillMasteryUpdate`` inputs. Empty input returns ``[]`` without a query."""
+        if not item_opportunity_ids:
+            return []
+        result = await self.session.scalars(
+            select(SkillStateTransitionRecord)
+            .where(SkillStateTransitionRecord.item_opportunity_id.in_(item_opportunity_ids))
+            .order_by(SkillStateTransitionRecord.created_at_utc, SkillStateTransitionRecord.skill_state_transition_id)
+        )
+        return list(result)
+
+
+class HintEventRepository(SqlAlchemyNeutralRepository[HintEventRecord]):
+    """BE4d (BEplan §9 BE4.5). SEPARATE from ``AttemptRepository``/``SkillStateTransitionRepository``
+    — a hint event never touches attempt or BKT-transition rows."""
+
+    model_type = HintEventRecord
+
+    async def count_for_opportunity(self, item_opportunity_id: UUID) -> int:
+        return await self.session.scalar(
+            select(func.count()).select_from(HintEventRecord).where(HintEventRecord.item_opportunity_id == item_opportunity_id)
+        )
+
+
+class SessionAggregateResultRepository(SqlAlchemyNeutralRepository[SessionAggregateResultRecord]):
+    """BE4e (BEplan §9 BE4.6). No update/delete method by design — immutable, same discipline as
+    ``SkillStateTransitionRepository``."""
+
+    model_type = SessionAggregateResultRecord
+
+    async def find_by_session(self, session_id: UUID) -> SessionAggregateResultRecord | None:
+        return await self.session.scalar(
+            select(SessionAggregateResultRecord).where(SessionAggregateResultRecord.session_id == session_id)
+        )
+
+
+class SkillCertificationResultRepository(SqlAlchemyNeutralRepository[SkillCertificationResultRecord]):
+    """BE4e (BEplan §9 BE4.6). No update/delete method by design — immutable."""
+
+    model_type = SkillCertificationResultRecord
+
+    async def list_for_session(self, session_id: UUID) -> list[SkillCertificationResultRecord]:
+        result = await self.session.scalars(
+            select(SkillCertificationResultRecord).where(SkillCertificationResultRecord.session_id == session_id)
+        )
+        return list(result)

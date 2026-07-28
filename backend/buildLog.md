@@ -4317,3 +4317,1465 @@ scope only — it is not a governance or named-owner ratification, and every `UN
 `CALIBRATION_PENDING` item in `component-b-closure-decisions.json`'s governance register remains
 open exactly as recorded there. No files were modified by this review beyond this log entry; no
 git commit was made.
+
+## BE3b — Domain Ports, Live-Engine Adapter, Runtime-Bundle Validation, Docker-Install Fix (2026-07-25)
+
+Batch scope per BEplan §BE3.1–§BE3.2, `component-b-live-engine-reuse-map.json`, and
+`runtime-bundle.schema.json`: domain ports over the reviewed live-safe capabilities, the concrete
+adapter binding those ports to the vendored `upadya-component-b-live-engine` package, immutable
+runtime-bundle load/validate machinery, and the Docker-install fix carried forward from BE3a's
+disclosed `.dockerignore` limitation. No live learner flow, no real approved scientific
+parameters, no BE4 governance-gate crossing. Read-only git throughout; nothing committed.
+
+### 1. Docker-install fix
+
+- `backend/.dockerignore`: added two narrow negations after the existing blanket `provenance/`
+  and `*.whl` excludes — `!provenance/wheels/upadya_component_b_live_engine-0.1.0+be3.0e86fdc-py3-none-any.whl`
+  and `!provenance/runtime-bundle.schema.json`. Everything else under `provenance/` (baseline
+  manifests, closure decisions, the generator dependency lock, and — critically — the
+  **prohibited full research wheel** `upadya_component_b_generator-...whl`, which sits in the
+  same `provenance/wheels/` directory) stays excluded from the build context. `packaging/`
+  (the source tree used only to build the wheel) also stays excluded; the app installs from the
+  wheel only, never from source.
+- `backend/Dockerfile`: added two `COPY` steps before the `pip install` line — the pinned
+  live-engine wheel (so `pip install --require-hashes -r requirements.lock` can resolve the
+  relative wheel path it already pinned) and `provenance/runtime-bundle.schema.json` (needed by
+  the runtime-bundle loader at import time, not only by tests).
+- `requirements.in` / `requirements.txt` / `requirements.lock`: added `jsonschema==4.25.1` and
+  its resolved transitive dependencies (`attrs==25.4.0`, `jsonschema-specifications==2025.9.1`,
+  `referencing==0.37.0`, `rpds-py==0.30.0`) with `--hash=sha256:...` entries for every published
+  file of each pinned version, fetched from the PyPI JSON API and inserted at the correct
+  alphabetical position to match the existing `requirements.lock` convention. `jsonschema` is a
+  new real runtime dependency (schema validation for the runtime-bundle manifest); nothing else
+  in `requirements.lock` changed.
+- **Proof (not simulated).** `docker compose build api` — full build succeeded; pip installed
+  `upadya-component-b-live-engine-0.1.0+be3.0e86fdc` from the now-resolvable wheel path alongside
+  the rest of the lock, no `--require-hashes` failures. `docker run --rm upadya-backend:be1-batch3
+  python -c "import component_b_generator; from app.infrastructure.live_engine.adapter import
+  LiveEngineAdapter"` — both imports succeeded inside the built image. Then `docker compose up -d
+  db`, waited for the Postgres healthcheck, and ran `docker run --network upadya-be1_default -e
+  DATABASE_URL=... upadya-backend:be1-batch3 python -m pytest -q` against the built image: **153
+  passed, 0 failed** (up from the 35 BE2/BE3a-guard subset re-verified in the BE3a closure
+  review — this run is the complete suite, including the persistence/UoW/session-lifecycle tests
+  that need a real database). `docker compose down` after.
+
+### 2. Domain ports (`app/domain/live_engine/`, `app/domain/runtime_bundle/`)
+
+Added `types.py` (plain `frozen` dataclasses only — no package Pydantic model is imported or
+re-exported anywhere under `app/domain`), `ports.py` (one `Protocol` per reuse-map capability:
+`CataloguePort`, `ActivationPort`, `SequencingPort`, `TaskConstructionPort`, `AnswerPort`,
+`DistractorPort`, `HintPort`, `BktPort`, `GuessGuardPort`, `CertificationPort`,
+`AggregationPort`), and `errors.py` (the stable internal/application error hierarchy:
+`CatalogueUnavailableError`, `UnknownTemplateError`, `TemplateNotActiveError`,
+`TaskConstructionError`, `AnswerRuleUnavailableError`, `DistractorConstructionError`,
+`HintUnavailableError`, all under a `LiveEngineError` base). Separately,
+`app/domain/runtime_bundle/` holds the `RuntimeBundle` dataclass mirroring
+`runtime-bundle.schema.json`'s own property names, the `RuntimeBundleLoaderPort` protocol, and
+its fail-closed error hierarchy (`RuntimeBundleNotFoundError`, `RuntimeBundleValidationError`,
+`RuntimeBundleChecksumMismatchError`, `RuntimeBundleNotApprovedError`).
+
+Domain `ItemTemplate`/`Catalogue` carry a reduced field set versus the package's own
+`ItemTemplate`/`LoadedCatalogue` (no `set_id`/`node_name`/`status_raw`/hint fields at the domain
+layer) — sufficient for every BE3b capability and test; later batches may extend these types as
+new capabilities are wired, without ever reaching for the package's models to do it.
+
+### 3. Adapter (`app/infrastructure/live_engine/adapter.py`)
+
+`LiveEngineAdapter` is the **only file under `app/` that imports `component_b_generator`**
+(enforced by the updated import-boundary tests, §5). It is stateless: every method is a pure
+function of its arguments, re-reading the governed catalogue file at `Catalogue.source_path`
+whenever a package-native `LoadedCatalogue`/`ItemTemplate` object is needed rather than
+hand-reconstructing one from the trimmed domain type — so every package function always receives
+the real, fully-validated loader output, never an approximation of it. No formula is copied or
+rewritten: every method is a direct call into the package's own `catalogue.loader`,
+`generation.activation`, `sequencing.features`/`score`, `generation.task_instances`,
+`answers.rules`/`registry`, `distractors.registry`, `behaviour.hints`, `bkt.update`,
+`bkt.guess_guard`, `bkt.certification`, and `aggregation.session` modules. Package exceptions
+(`CatalogueValidationError`, `UnsupportedTemplateError`, `TaskInstanceValidationError`,
+`HintContentError`, `DistractorGenerationError`, bare `KeyError` for unregistered template ids)
+are translated into the domain error hierarchy at the adapter boundary; nothing package-specific
+propagates past it.
+
+Deterministic task construction (`build_task_instance`) accepts a backend-owned
+`TaskConstructionRequest` carrying a session-pinned `global_seed` rather than a package
+`SeedLineage` — the adapter derives the opportunity's seed lineage internally via the package's
+own `SeedManager`, keeping `seeds`/`SeedLineage` entirely `PRIVATE_ENGINE_INTERNAL` as the reuse
+map requires. Sequencing's weighted-sum score uses the FROZEN 0.50/0.30/0.20 weights pinned
+inside the adapter (`BSequencingConfig` is constructed with those exact values every call); no
+caller can supply a different weight set through the domain port.
+
+### 4. Runtime-bundle load/validate machinery (`app/infrastructure/runtime_bundle/loader.py`)
+
+`RuntimeBundleLoader.load_and_validate(bundle_path, schema_path, *, artifact_paths=None,
+require_approved=True)`:
+
+1. Reads the manifest and schema JSON; a missing file raises `RuntimeBundleNotFoundError`,
+   invalid JSON raises `RuntimeBundleValidationError` — never a partial parse.
+2. Validates the manifest against `runtime-bundle.schema.json` via `jsonschema.validate`
+   (Draft 2020-12, matching the schema's own `$schema`); any missing required field, wrong type,
+   or violated `const`/`enum`/`pattern` raises `RuntimeBundleValidationError` with the failing
+   JSON path in the message.
+3. Verifies the `generator` artifact's declared SHA-256 against the file at its `source_path` —
+   the only artifact the frozen schema itself gives a `source_path` for. `catalogue`/
+   `bkt_configuration`/`certification_configuration`/`guess_guard_configuration`/
+   `safe_progress_policy`/`attempt_policy`/`timeout_policy` are schema-shaped `versionedArtifact`
+   entries with a `checksum` but **no path field** in the frozen schema; the loader additionally
+   verifies any of these the caller supplies a real file for via the optional `artifact_paths`
+   mapping (exercised in tests against the fixture catalogue), and does not fabricate
+   verification against files the schema gives no location for.
+4. Gates on `approval_status`: `require_approved=True` (the default — the readiness/activation
+   path) raises `RuntimeBundleNotApprovedError` for anything other than exactly `"APPROVED"`.
+   **This batch never writes `"APPROVED"` anywhere** — not in the loader, not in any fixture —
+   so every positive-path test below exercises the loader with `require_approved=False`
+   explicitly, and the one test that uses the default proves the gate itself fails closed on an
+   otherwise-valid bundle. Approving a real bundle remains the separate BE4 governance gate.
+
+### 5. Test fixtures (TEST-FIXTURE-ONLY, never the governed catalogue)
+
+- `tests/fixtures/runtime_bundle/test_catalogue.md` — a 7-template, 7-skill markdown catalogue
+  (one already-implemented representative template per skill: `B-CNT01-SEQ-CONTINUE`,
+  `B-NS04-COMPARE-NUMERALS`, `B-PV01-IDENTIFY-TENS-ONES`, `B-ADD04-2D-NO-REGROUP`,
+  `B-SUB04-2D-NO-BORROW`, `B-MUL03-FACTS-2-5-10`, `B-DIV03-DIVIDE-BY-2`), with hint text on two
+  templates and deliberately none on `B-DIV03-DIVIDE-BY-2` to exercise the hint fail-closed path.
+  Verified against the real `load_catalogue` inside an isolated container before being used by
+  any test.
+- `tests/fixtures/runtime_bundle/valid_unapproved_bundle.json` — schema-valid, and its
+  `generator` checksum is the **real** recorded SHA-256 of the pinned live-engine wheel
+  (`faa5760df1f5a3874f38f8103cdaaa88a14b3190216e46ab21765eee65a70c29`, matching
+  `component-b-live-engine-manifest.json`) so the checksum-verification positive path is
+  checking something real, not a fixture-only value. `approval_status` is `CALIBRATION_PENDING`
+  throughout (top level and every sub-artifact) — never `APPROVED`.
+- `tests/fixtures/runtime_bundle/missing_field_bundle.json` — the same manifest with
+  `bkt_configuration` removed, for the missing-required-field defect class.
+- `tests/fixtures/runtime_bundle/bad_checksum_bundle.json` — the same manifest with the
+  `generator` checksum value replaced by 64 `f`s, for the checksum-mismatch defect class.
+
+### 6. Tests added
+
+- `tests/test_be3b_live_engine_adapter.py` — catalogue load/checksum mapping; activation
+  active/inactive/unknown-template; task-instance determinism under fixed provenance (two calls,
+  identical result) and non-determinism under a different `global_seed`; operand/correct-answer
+  internal consistency via the adapter's own `AnswerPort` recomputation; governed hint content
+  and fail-closed missing-hint content; BKT predict/posterior/update boundedness, determinism,
+  and correct-vs-incorrect posterior ordering; Guess-Guard triggered/insufficient-evidence/
+  not-triggered plus certification's dependence on it; sequencing feature computation and the
+  frozen-weight score identity; selection tie-break reporting; session aggregation folding one
+  opportunity into a rollup, and the missed-session-with-opportunities contract violation
+  surfacing as `LiveEngineError`.
+- `tests/test_be3b_runtime_bundle.py` — schema-valid+checksum-correct load under
+  `require_approved=False`; `artifact_paths` checksum verification against the real fixture
+  catalogue (positive) and a substituted wrong file (negative); missing required field; generator
+  checksum mismatch; unapproved status under the default `require_approved=True`; missing
+  manifest file; missing schema file; invalid JSON; wrong type for a required field; and an
+  explicit assertion that no fixture in this batch is ever marked `"APPROVED"`.
+- Updated `tests/test_be3_live_engine_boundary.py`'s
+  `test_app_import_graph_still_does_not_reach_prohibited_modules` (renamed
+  `test_only_the_live_engine_adapter_module_imports_the_package`, plus a new
+  `test_app_import_graph_never_reaches_the_thirteen_prohibited_submodules`): that test's own
+  docstring said "this batch does not wire any application adapter" — BE3b is that next batch, so
+  the over-broad "app/ may never import `component_b_generator` at all" assertion no longer
+  holds. The updated guard instead asserts the top-level package import is confined to exactly
+  `app/infrastructure/live_engine/adapter.py`, and — separately, repo-wide, including inside the
+  adapter itself — that all 13 explicitly-prohibited submodules (`cohort`/*, the six synthetic
+  `behaviour.*` generators, `pipeline`, `pilot`, `runner`, `audits`/* , `generation.item_opportunities`)
+  stay unreachable. Same treatment applied to the older, even-broader BE2 guard
+  `test_no_yass_research_or_scientific_imports` in `tests/test_be2_architecture_guards.py`, which
+  predated BE3a and had the identical whole-package prohibition.
+
+### 7. What this batch deliberately does not do
+
+No new API route. No live question/attempt/hint/BKT-write flow. No persisted opportunity/task
+tables. No real governed catalogue reference (the adapter's `CataloguePort.load` takes an
+explicit path, per BE3.2 step 2, but every call in this batch's tests points at the
+TEST-FIXTURE-ONLY catalogue above — never `R26-IT-138`). No runtime bundle in this batch is ever
+marked `APPROVED`, `activation_date` is `null` throughout, and `publication_state` stays `DRAFT`.
+The private/public opportunity DTO split, the full characterization/privacy suite against the
+real catalogue, and building/approving the real runtime bundle remain explicitly out of scope
+(BE3c and the BE4 governance gate, respectively).
+
+**Status: BE3b engineering continuation, not a closure review.** 153/153 tests pass in the
+Dockerfile-pinned image against a real Postgres, including the full BE2 architecture-guard suite
+and the updated BE3 import-boundary guards. No git commit was made; the working tree remains
+uncommitted for Yasindu's review.
+
+## BE3b Closure Review (separate pass against PROMPT BE3b, the reuse map, and runtime-bundle.schema.json)
+
+Performed from a clean `docker build --no-cache` of `backend/Dockerfile`, plus a fresh Postgres
+16 container for the migration + full test run. Read-only: no git operations, no commits.
+
+1. **Single import point.** `grep -rl component_b_generator app/` returns only
+   `app/infrastructure/live_engine/adapter.py` (the one other hit,
+   `app/domain/live_engine/__init__.py`, is a docstring mention, not an import). Confirmed
+   independently of `test_only_the_live_engine_adapter_module_imports_the_package`, which also
+   passes. `app/domain/**` uses only `dataclass`/`Enum` types in `live_engine/types.py` and
+   `runtime_bundle/types.py` — no import of any `component_b_generator` Pydantic model. The other
+   `pydantic.BaseModel` usages under `app/domain/` (`b_session.py`, `classroom_membership.py`,
+   `principal.py`, `profile_classroom.py`) are backend-owned models unrelated to the vendored
+   package — out of scope for this check and not a boundary violation.
+
+2. **No formula copied.** Read `adapter.py` in full: every port method calls straight through to
+   a package function (`bkt_predict/posterior/update`, `evaluate_guess_guard`, `certify_skill`,
+   `score_candidate`, `build_task_instance`, `aggregate_session`, etc.) and only maps backend
+   dataclasses to package Pydantic/dataclass types and back. The only literal numbers the adapter
+   contributes are the frozen sequencing weights (0.50/0.30/0.20), passed into the package's own
+   `BSequencingConfig`, which does the scoring — no math is reimplemented in the adapter.
+
+3. **Guard completeness — GAP FOUND.** `PROHIBITED_MODULES` in
+   `tests/test_be3_live_engine_boundary.py` includes `cohort`, `cohort.builder`,
+   `behaviour.first_attempt`, `behaviour.latency`, `behaviour.attempt_loop`,
+   `behaviour.initialization/wrong_answers/derivation/seeds/validation`, `pipeline`, `pilot`,
+   `runner`, `audits` (+ `audits.fidelity/leakage/population_neutrality`) — but it does **not**
+   include `component_b_generator.generation.item_opportunities`. The reuse-map/manifest side is
+   internally consistent (`component-b-live-engine-manifest.json` line 146 lists
+   `generation.item_opportunities` under `excluded_by_omission.modules`, and its
+   `prohibited_module_unreachability_check` at line 160 records that unreachability was manually
+   verified at packaging time), but that manual, packaging-time check is not mirrored in the
+   automated `PROHIBITED_MODULES` regression tuple. Confirmed by direct import in the built image
+   (`ModuleNotFoundError: No module named 'component_b_generator.generation.item_opportunities'`)
+   — the module is absent from the current wheel, so there is no live violation today. But
+   because it is missing from `PROHIBITED_MODULES`, neither
+   `test_prohibited_module_is_not_importable_from_the_package` nor
+   `test_app_import_graph_never_reaches_the_thirteen_prohibited_submodules` would catch a future
+   wheel rebuild that reintroduces it (e.g. via `generation/__init__.py` un-trimming). This is the
+   one item in the required list (behaviour.first_attempt/latency/attempt_loop, cohort/*,
+   pipeline, pilot, runner, audits, generation.item_opportunities) not actually present in the
+   guard. Recommend adding it to `PROHIBITED_MODULES` before treating this guard as closed.
+
+4. **Built-image inspection.** `docker build --no-cache` succeeded from `backend/Dockerfile`
+   unmodified. `pip list` in the built image shows exactly one Component-B package,
+   `upadya-component-b-live-engine 0.1.0+be3.0e86fdc`; `import upadya_component_b_generator`
+   (the full research wheel's name) raises `ModuleNotFoundError`, and a repo-wide
+   `find / -iname '*component_b_generator*'` inside the container returns only the single vendored
+   package directory. `.dockerignore`'s `provenance/wheels/*` + explicit
+   `!upadya_component_b_live_engine-...whl` allowlist keeps any other wheel out of the build
+   context. Live-engine functions (`bkt_predict/posterior/update`, `plausibility_floor`) import
+   and run inside the image.
+
+5. **Runtime-bundle loader fail-closed behavior.** Verified in `tests/test_be3b_runtime_bundle.py`
+   and by re-reading `app/infrastructure/runtime_bundle/loader.py`: missing manifest/schema file →
+   `RuntimeBundleNotFoundError`; invalid JSON → `RuntimeBundleValidationError`; missing required
+   field or wrong type → `RuntimeBundleValidationError` (schema-driven); generator checksum
+   mismatch or a caller-supplied `artifact_paths` checksum mismatch →
+   `RuntimeBundleChecksumMismatchError`; any `approval_status != "APPROVED"` under the default
+   `require_approved=True` → `RuntimeBundleNotApprovedError`. Grepped every fixture
+   (`valid_unapproved_bundle.json`, `missing_field_bundle.json`, `bad_checksum_bundle.json`) —
+   every `approval_status` occurrence (top-level and every sub-artifact) is `CALIBRATION_PENDING`
+   or `ENGINEERING_ASSUMPTION`, never `APPROVED`; `test_never_marks_a_bundle_approved_in_this_batch`
+   asserts this directly. The loader has no code path that writes or defaults `approval_status`,
+   so it cannot self-approve.
+
+6. **Full suite in the image.** Built the image with `docker build --no-cache`, ran
+   `alembic upgrade head` against a throwaway `postgres:16-alpine` container (clean, migrations
+   applied without error), then `python -m pytest -q`: **153 passed**, 0 failed. Re-ran
+   `tests/test_be3_live_engine_boundary.py tests/test_be2_architecture_guards.py
+   tests/test_be3b_live_engine_adapter.py tests/test_be3b_runtime_bundle.py` verbosely: 66/66
+   passed, confirming the import-boundary and architecture guards are active and green in the
+   built image, not just locally.
+
+**Verdict: NO-GO — BE3B_ADAPTER_AND_BUNDLE_BATCH_CLOSED.** Items (1), (2), (4), (5), and (6) all
+verify clean. Item (3) fails as specified: `generation.item_opportunities` is required to be part
+of the completed `PROHIBITED_MODULES` guard and is not. This is a narrow, mechanical gap (one
+tuple entry) with no live exploit today — the module doesn't exist in the current wheel — but the
+guard as written does not yet meet the "COMPLETE" bar this review was asked to confirm. Closure
+should be re-requested after `generation.item_opportunities` is added to `PROHIBITED_MODULES` in
+`tests/test_be3_live_engine_boundary.py` (and the suite re-run green in the image).
+
+Docker/Postgres containers, network, and image built for this review were removed after
+verification; nothing was committed.
+
+## 2026-07-25 — Guard-completeness fix (NO-GO item 3 closure)
+
+Added `"component_b_generator.generation.item_opportunities"` to `PROHIBITED_MODULES` in
+`tests/test_be3_live_engine_boundary.py` — the one tuple entry the NO-GO review flagged as
+missing relative to `excluded_by_omission.modules` in
+`backend/provenance/component-b-live-engine-manifest.json`. One-line addition only; no
+adapter/loader change, no behavior change.
+
+Re-verified from a fresh `docker build --no-cache` of `backend/Dockerfile` (image
+`upadya-backend:be3b-fix`), migrations applied via `alembic upgrade head` against a throwaway
+`postgres:16.10-bookworm` container, then the full suite run inside the built image:
+**154 passed** (153 from the prior closure run + 1 new parametrized case for the added module),
+0 failed. Re-ran `tests/test_be3_live_engine_boundary.py tests/test_be2_architecture_guards.py
+tests/test_be3b_live_engine_adapter.py tests/test_be3b_runtime_bundle.py` verbosely: 67/67 passed
+(up from 66/66), confirming both consuming guards —
+`test_prohibited_module_is_not_importable_from_the_package[component_b_generator.generation.item_opportunities]`
+and `test_app_import_graph_never_reaches_the_thirteen_prohibited_submodules` — are green with the
+extended tuple.
+
+Direct confirmation in the built image:
+`importlib.import_module("component_b_generator.generation.item_opportunities")` raises
+`ModuleNotFoundError: No module named 'component_b_generator.generation.item_opportunities'` —
+the newly-guarded module is genuinely absent from the installed wheel, so the guard passes
+because the module is unreachable, not because the test was skipped. The adapter's legitimate
+imports — `component_b_generator.generation.activation`, `.errors`, `.task_instances` — all
+import successfully; none contain the substring `item_opportunities`, so there is no false
+positive from the new guard entry.
+
+Docker/Postgres containers, network, and image built for this fix were removed after
+verification; nothing was committed — working tree remains uncommitted for Yasindu's review.
+
+## BE3b Re-Closure Review (focused re-verification of the guard-gap fix)
+
+Read-only, independent re-run from a fresh `docker build --no-cache` of `backend/Dockerfile`
+(image `upadya-backend:be3b-reclosure`), a throwaway `postgres:16.10-bookworm` container on a
+dedicated bridge network, and `alembic upgrade head` against it (clean, no errors). This pass
+re-confirms only the scope named in the re-closure request; the import boundary, no-formula-copy,
+built-image wheel exclusion, fail-closed loader, and green suite were already independently
+established in the closure review above and are re-checked here only insofar as the full suite
+run and the specific NO-GO item cover them.
+
+1. **`PROHIBITED_MODULES` now includes the missing entry.** Read
+   `tests/test_be3_live_engine_boundary.py` directly: line 41 is
+   `"component_b_generator.generation.item_opportunities"`, appended after the 13 previously-listed
+   entries (cohort/*, 6x behaviour.*, pipeline, pilot, runner, audits + 3 audits submodules). Both
+   consuming guards pick it up:
+   `test_prohibited_module_is_not_importable_from_the_package[component_b_generator.generation.item_opportunities]`
+   and `test_app_import_graph_never_reaches_the_thirteen_prohibited_submodules` both PASSED in the
+   built image (verbose run below).
+
+2. **Built-image `importlib` behavior.** Ran directly inside the built image:
+   `importlib.import_module("component_b_generator.generation.item_opportunities")` raises
+   `ModuleNotFoundError: No module named 'component_b_generator.generation.item_opportunities'` —
+   absent, not skipped. In the same process, the adapter's actual imports —
+   `component_b_generator.generation.activation`, `.errors`, `.task_instances` — all import
+   successfully, confirming the new guard entry does not collide with or block any legitimate
+   adapter import.
+
+3. **Full suite in the image.** `python -m pytest -q` inside the freshly-built image: **154
+   passed**, 0 failed. Targeted verbose re-run of
+   `tests/test_be3_live_engine_boundary.py tests/test_be2_architecture_guards.py
+   tests/test_be3b_live_engine_adapter.py tests/test_be3b_runtime_bundle.py`: **67/67 passed**,
+   including all 18 parametrized cases of
+   `test_prohibited_module_is_not_importable_from_the_package` (the 13 original + the new
+   `generation.item_opportunities` case).
+
+4. **No other BE3b finding regressed.**
+   - **Sole app/ importer.** `grep -rl component_b_generator app/` inside the built image
+     (excluding `__pycache__`) returns only `app/infrastructure/live_engine/adapter.py`;
+     `app/infrastructure/live_engine/__init__.py` and `app/domain/live_engine/__init__.py` are
+     docstring mentions, not imports (read in full — no `import`/`from` statement present).
+   - **No package Pydantic models in `app/domain`.** `grep -rn BaseModel app/domain` finds exactly
+     four backend-owned models (`classroom_membership.py`, `principal.py`, `b_session.py`,
+     `profile_classroom.py`) — none reference `component_b_generator`.
+   - **Image lacks the full research wheel.** `pip list` shows exactly one Component-B package,
+     `upadya-component-b-live-engine 0.1.0+be3.0e86fdc`; `import upadya_component_b_generator`
+     raises `ModuleNotFoundError`; a repo-wide `find / -iname '*component_b_generator*'` returns
+     only the single vendored package under `site-packages`. `.dockerignore` still excludes
+     `provenance/wheels/*` broadly and allowlists back only the pinned live-engine wheel and
+     `provenance/runtime-bundle.schema.json`, keeping the research wheel and the rest of
+     `provenance/` out of the build context.
+   - **Loader still fails closed.** `tests/test_be3b_runtime_bundle.py` (10/10 in the verbose run
+     above) covers missing manifest/schema file, invalid JSON, missing/wrong-type required field,
+     generator and artifact-path checksum mismatch, and default-`require_approved` rejection of
+     any non-`APPROVED` bundle — all still raise the expected typed error in the built image.
+
+Docker/Postgres containers, the dedicated network, and the image built for this re-closure were
+removed after verification (`docker rm -f`, `docker network rm`, `docker rmi`); nothing was
+committed — working tree remains uncommitted for Yasindu's review.
+
+**Verdict: GO — BE3B_ADAPTER_AND_BUNDLE_BATCH_CLOSED.** The sole NO-GO item from the prior closure
+review (missing `generation.item_opportunities` guard entry) is fixed, consumed by both the
+parametrized import test and the app-wide submodule guard, and confirmed live in a real
+`ModuleNotFoundError` from the built image — not a vacuously-passing or skipped test. No other
+BE3b finding regressed: single adapter import point, no formula duplication, no package Pydantic
+models under `app/domain`, no research wheel in the image, fail-closed runtime-bundle loader, and
+154/154 (67/67 targeted) green in a clean `docker build --no-cache` image against real Postgres.
+
+## 2026-07-25 — BE3c: private/public task representation split + characterization/privacy tests
+
+Implements BEplan BE3.3–BE3.4 as one bounded batch on top of the committed BE3b adapter
+(`36fb525`). Fixed TEST-FIXTURE-ONLY provenance only: no live learner flow, no API route, no
+persistence table/migration, no real approved runtime bundle, no crossing the BE4 scientific
+gate. Nothing was committed; the working tree is left uncommitted for Yasindu's review.
+
+**Scope-boundary decision (BE3.3 vs. BE4.1 — recorded per the governance note in this batch's
+task brief).** BEplan BE3.3.1 says "persist a private opportunity/task snapshot"; BEplan BE4.1.1
+says "add private opportunity/task-instance TABLES". Those two lines describe the same
+persistence concern at different levels of commitment. Resolution applied here: this batch
+defines the private and public **in-memory representations** (`PrivateTaskRecord`,
+`PublicTaskPresentation`), the private→public **mapping** (`project_to_public`), and the
+**characterization/privacy tests** proving the split holds — and stops there. It does NOT add an
+opportunity/task-instance database table, a SQLAlchemy model, or an Alembic migration; standing
+up that persistence, wiring it into a session-scoped unit of work, and enforcing "one open
+opportunity per session" is BE4.1 scope and is left for that batch. This keeps BE3's exit gate
+("public DTOs contain no private fields") satisfiable without pre-committing to BE4's storage
+schema before BE4 is actually reached.
+
+**What was added:**
+
+1. `app/domain/live_engine/presentation.py` — `PrivateTaskRecord` (full private snapshot: operands,
+   correct answer, accepted equivalents, distractor candidates + rule ids, applied guard ids,
+   generation/global seed, `SelectionReason`, catalogue version/checksum, bundle version, student
+   id, curriculum node id) and `PublicTaskPresentation` (allow-listed learner-facing DTO:
+   opportunity/instance id, skill, grade, difficulty, representation type, response format,
+   prompt, `presented_choices`). `build_private_task_record` assembles the private record from an
+   adapter `TaskInstance` plus the caller's own request/selection-reason/bundle-version
+   provenance. `project_to_public` builds the public DTO by naming each field it reads from the
+   private record explicitly — never via `dataclasses.asdict`/`replace` on the private object
+   with keys deleted afterward, so a newly added private field cannot leak into the public DTO by
+   omission. `presented_choices` is the sorted union of the correct answer and distractor
+   candidates (needed so the learner can select the right one) but carries no marker of which
+   entry is correct.
+
+2. `app/domain/runtime_bundle/readiness.py` — `assert_catalogue_matches_bundle(bundle, catalogue,
+   catalogue_checksum)`, a pure cross-check the BE3b loader didn't have: it fails closed
+   (`RuntimeBundleValidationError`) the moment the bundle's declared catalogue checksum, catalogue
+   version, required template count, or skill set disagrees with the catalogue an adapter call
+   actually loaded. No partial-match or fallback path — every branch either passes silently or
+   raises.
+
+3. `tests/fixtures/runtime_bundle/test_catalogue.md` extended from 7 to all 36 template ids in
+   `provenance/component-b-coverage.json` (29 implemented + 7 deferred), so the characterization
+   suite can exercise the real implemented/deferred partition instead of one representative per
+   skill. Each implemented template's `grade_scope` was set to reproduce the exact
+   `eligible_grades` declared by its `ItemSampler` in the vendored
+   `component_b_generator.samplers.*` registry (verified by reading each sampler module
+   directly, not by assumption); each deferred template's status is `DEFERRED_CALIBRATION_PENDING`
+   or `DEFERRED_UNDERSPECIFIED` matching its `decision_code` in the coverage report. Extending the
+   fixture changed its SHA-256, so the catalogue checksum in all three runtime-bundle JSON
+   fixtures (`valid_unapproved_bundle.json`, `missing_field_bundle.json`,
+   `bad_checksum_bundle.json`) was updated to the new value — confirmed the *only* difference
+   between `valid_unapproved_bundle.json` and `missing_field_bundle.json` is the deliberately
+   absent `bkt_configuration` block (not the catalogue checksum), and that
+   `bad_checksum_bundle.json`'s deliberately-wrong checksum is still on the `generator` artifact,
+   not `catalogue`. `Dockerfile` and `.dockerignore` were given one new, narrowly-scoped exception
+   to copy `provenance/component-b-coverage.json` (partition provenance only — no generator
+   source, no wheel) into the image so the characterization tests can read it at run time.
+
+4. `tests/test_be3c_characterization.py` — sanity-checks the fixture catalogue actually contains
+   every implemented/deferred id claimed in the coverage report; generates one instance per
+   (implemented template, eligible grade) pair (30 pairs across 29 templates, since
+   `B-ADD02-COUNT-ON` is eligible for both grades) and asserts internal consistency; asserts all 7
+   deferred templates raise `TemplateNotActiveError` at both grades; asserts determinism (repeat
+   build, same fixed request, byte-identical `TaskInstance`); asserts grade 2 never contains
+   multiplication/division in `catalogue.eligible_for(2)` and that `decide_activation` reports
+   every multiplication/division template inactive at grade 2; asserts the canonical sequencing
+   tie-break (skill order, then lexicographic `item_template_id`) picks the same winner regardless
+   of input order or repetition; asserts hint content is the exact catalogue string with matching
+   catalogue checksum/version, and that a template with no authored hint fails closed
+   (`HintUnavailableError`), never a generated fallback.
+
+5. `tests/test_be3c_privacy.py` — an explicit allow-list serialization test asserting
+   `PublicTaskPresentation.to_public_dict()` produces exactly the 9 allowed keys, never
+   `correct_answer`/`allowed_equivalent_answers`, and that the correct answer appears among
+   `presented_choices` without any field marking which one it is; a schema-snapshot scan over the
+   dataclass's own field names (`dataclasses.fields`, independent of the serializer) checked
+   against a forbidden-name set (correct answer, equivalents, answer rules, seeds, BKT params,
+   mastery/posterior/certification fields, selection rationale, distractor provenance, student id,
+   curriculum node id, catalogue/bundle version) plus a recursive value walk of the serialized
+   dict asserting none of those private scalars appear by value either; a structural check that
+   the public dataclass's field set is not a trivial subset produced by copying the private one
+   (only `presented_choices` differs, and it exists on the public side only); and four
+   runtime-bundle readiness tests — the fixture bundle matches the extended catalogue cleanly, and
+   a checksum mismatch, a template-count mismatch, and a version mismatch each raise
+   `RuntimeBundleValidationError` rather than silently proceeding.
+
+**Pre-existing gap found and fixed: the fixture catalogue was never actually committed.**
+`git log -- tests/fixtures/runtime_bundle/test_catalogue.md` shows no history at all — the
+repo-root `.gitignore`'s blanket `*.md` rule (line 29, meant for local-only documentation) was
+silently excluding this file from every commit since it was introduced in BE3b, even though
+`test_be3b_live_engine_adapter.py` and `test_be3b_runtime_bundle.py` both depend on it. It only
+worked in Docker/CI because `.dockerignore` (a separate allowlist) copies the whole `tests/`
+directory regardless of `.gitignore`. Added one narrow exception,
+`!/backend/tests/fixtures/runtime_bundle/test_catalogue.md`, to the root `.gitignore` — this is a
+repository-configuration edit, not a git state-changing command, and no `git add`/`commit` was
+run. Flagging this explicitly: without that exception, extending this fixture for BE3c (or ever
+committing the original BE3b version of it) would have gone in silently untracked.
+
+**Verification.** Built `backend/Dockerfile` (`docker build`, no `--no-cache` needed — no
+image-affecting layer changed except the two new provenance/coverage COPY lines and the
+`.dockerignore` exception). Ran the full suite against a throwaway `postgres:16.10-bookworm`
+container on a dedicated bridge network (`be3c-net`/`be3c-db`), migrations applied via
+`alembic upgrade head` (clean, five revisions, no errors): **176 passed, 0 failed** — the prior
+154 plus 22 new (12 characterization + 10 privacy). A targeted verbose run of
+`test_be3c_characterization.py test_be3c_privacy.py test_be3b_live_engine_adapter.py
+test_be3b_runtime_bundle.py test_be3_live_engine_boundary.py test_be2_architecture_guards.py`:
+89/89 passed, confirming the BE2 architecture guards and BE3a/BE3b import-boundary guards (sole
+`app/` importer of `component_b_generator` remains `app/infrastructure/live_engine/adapter.py`,
+all entries in `PROHIBITED_MODULES` — 18 submodule paths covering the 13 prohibited
+research/synthetic capabilities — unreachable) are still green alongside the new BE3c code. Docker
+containers, the dedicated network, and the built image were removed after verification
+(`docker rm -f`, `docker network rm`, `docker rmi`); no git command beyond read-only inspection
+was run — nothing is staged or committed.
+
+**No closure decision recorded here.** Per this batch's instructions, closure/no-go review is a
+separate follow-up, not part of this entry.
+
+## 2026-07-25 — BE3c closure review: GO (BE3C_PRIVATE_PUBLIC_SPLIT_BATCH_CLOSED)
+
+Independent closure review against BEplan BE3.3–BE3.4, run from a fresh `docker build --no-cache`
+image plus a real throwaway `postgres:16.10-bookworm` container (`be3c-review-net`/`be3c-review-db`,
+disposed of after verification). Read-only git only; nothing staged or committed; this entry is the
+only write made.
+
+**(1) Private/public split.** `app/domain/live_engine/presentation.py` builds
+`PublicTaskPresentation` and its `to_public_dict()` field-by-field from an explicit allow-list —
+never `dataclasses.asdict`/`replace` on `PrivateTaskRecord` with keys deleted after. Confirmed by
+reading `project_to_public` directly (every field is named on the right-hand side, nothing copied
+wholesale) and by `tests/test_be3c_privacy.py`: an allow-list serialization test (exactly the 9
+allowed keys, correct answer/equivalents absent, correct answer present-but-unmarked among
+`presented_choices`), a schema-snapshot scan of `dataclasses.fields(PublicTaskPresentation)` against
+a forbidden-name set (correct answer, equivalents, answer rules, seeds, BKT params, mastery/
+posterior/certification, selection rationale, distractor provenance, student id, curriculum node id,
+catalogue/bundle version) plus a recursive value walk of the serialized dict, and a structural check
+that the public field set isn't a copy-then-delete artifact of the private one. No private field is
+reachable in the public DTO.
+
+**(2) Characterization.** `tests/test_be3c_characterization.py` verified: adapter output matches the
+pinned generator via the vendored package on fixed fixtures; all 29 implemented templates generate
+across all their eligible grades (30 pairs, `B-ADD02-COUNT-ON` counted twice); all 7 deferred
+templates raise `TemplateNotActiveError` at grades 2 and 3; determinism holds (byte-identical
+`TaskInstance` on repeat build under a fixed request); grade 2 never receives multiplication or
+division (`catalogue.eligible_for(2)` and `decide_activation` both checked); the canonical
+skill-order/lexicographic-template-id tie-break is stable regardless of candidate input order or
+repetition; hint text is the exact catalogue string with matching checksum/version provenance, and a
+template with no authored hint fails closed (`HintUnavailableError`), never a generated fallback.
+
+**(3) BE3.3/BE4.1 boundary held.** No new DB table, model, or Alembic migration (`migrations/versions`
+unchanged — no untracked files there; the batch's `readiness.py`/`presentation.py` are pure in-memory
+domain code). No new API route (no `APIRouter`/`@router.*` in `app/domain/live_engine` or
+`app/domain/runtime_bundle`; no live-engine wiring in `app/main.py`/`app/api` router includes). No
+live learner flow.
+
+**(4) Config edits narrow and disclosed.** `git diff` confirms: `.gitignore` adds exactly one
+exception line for `test_catalogue.md` (the pre-existing untracked-fixture gap, disclosed and fixed,
+not new scope creep); `.dockerignore` and `Dockerfile` add exactly one exception/COPY line each for
+`provenance/component-b-coverage.json`. Read that file directly: it is partition/provenance metadata
+only (template ids, implemented/deferred status, grade-activation counts, response-format
+classification) — no correct answers, no BKT/scientific parameters, no secrets. No other undisclosed
+change found in either file.
+
+**(5) Import boundary intact.** `test_only_the_live_engine_adapter_module_imports_the_package` and
+`test_app_import_graph_never_reaches_the_thirteen_prohibited_submodules` both pass; `presentation.py`
+itself has no `component_b_generator` import. `PROHIBITED_MODULES` still lists 18 submodule paths
+covering the 13 prohibited research/synthetic capabilities, all confirmed unreachable.
+
+**(6) Full suite green in the image.** Clean `docker build --no-cache` succeeded; `alembic upgrade
+head` applied all 5 revisions cleanly against the real Postgres container; full suite: **176 passed,
+0 failed**. Targeted re-run of `test_be3c_characterization.py test_be3c_privacy.py
+test_be3b_live_engine_adapter.py test_be3b_runtime_bundle.py test_be3_live_engine_boundary.py
+test_be2_architecture_guards.py`: **89 passed**. Numbers match the BE3c batch entry exactly.
+
+**Non-blocking note.** `provenance/component-b-coverage.json` currently ships in the runtime image
+(via the new `Dockerfile` COPY line) purely so the characterization test suite can read it inside the
+container. It is not used by any non-test runtime code path yet. Worth revisiting whether
+test-only provenance should live in a test-stage-only layer once a multi-stage Dockerfile exists,
+so the shipped runtime layer doesn't carry test fixtures it doesn't execute against.
+
+**Verdict: GO.** Identifier: `BE3C_PRIVATE_PUBLIC_SPLIT_BATCH_CLOSED`.
+
+## 2026-07-25 — Scientific-gate parameter-authorization draft (`component-b-scientific-parameter-authorization.json`)
+
+Drafted `provenance/component-b-scientific-parameter-authorization.json`, a new
+`SCIENTIFIC_PARAMETER_AUTHORIZATION_DRAFT` record. Read-only against everything under `app/**`,
+`tests/**`, `frontend/**`, migrations, the runtime-bundle loader, `runtime-bundle.schema.json`, and
+every pre-existing provenance JSON; no state-changing git command run; nothing staged or committed.
+
+**Purpose.** The record transcribes, with exact source citations and unmodified status tags, the
+scientific-gate parameter values proposed by the Yass Component B spec
+(`R26-IT-138_Component_B_Empirical_Statistical_Parameters_v1.0.md`,
+`R26-IT-138_Component_B_Item_and_Task_Set_Catalogue_v1.0.md`) and the packaged, population-neutral
+engine config (`bkt/config.py`, `certification.py`, `guess_guard.py`, `sequencing/config.py`). It
+**approves nothing**: every named-approver slot is an explicit `UNRESOLVED_PLACEHOLDER` (mirroring
+`component-b-profile-classroom-ratification.json`'s approver-record pattern), and no status tag was
+upgraded from its source.
+
+**Gate items covered** (cross-checked against `component-b-closure-decisions.json`
+`governance_register`): catalogue approval (with the catalogue's computed SHA-256, see below); all
+four `response_format_mapping_review.mappings` entries (`B-ADD02-COUNT-ON`, `B-CNT06-SKIP-COUNT`,
+`B-PV02-DECOMPOSE-2D`, `B-PV04-DECOMPOSE-3D`) carried forward as `UNRESOLVED`; BKT parameter
+approval (special-cased, see below); certification threshold `theta_B` (spec §6.3, value 0.95,
+`LITERATURE_SUPPORTED · CALIBRATION_PENDING`); Guess-Guard numeric configuration (`q=0.10`,
+`n_min=5`, frozen v1 §14A, `CALIBRATION_PENDING`, plus the FROZEN structural constraints
+`P(G)+P(S)<1` and `P(G)<=0.5`); sequencing weights (0.5/0.3/0.2, `FROZEN` per
+`runtime-bundle.schema.json`'s const, not reopened); attempt limits (`UNRESOLVED`, no live value);
+timeout policy (governed statement carried forward, numeric threshold `UNRESOLVED`); completion
+policy (`UNRESOLVED`); safe-progress policy (`UNRESOLVED`); cold-start policy (`FROZEN` governed
+deferral, `DISABLED`); and owner/academic approval (`UNRESOLVED`, with a `named_approver_slots`
+block for the Component B owner/academic-research approver, the academic/research calibration
+owner, and the product owner with academic/research approval).
+
+**BKT population-gap open decision.** The spec's §6.2.1 table (21 rows = 7 skills × 3 populations,
+every row `ENGINEERING_ASSUMPTION · CALIBRATION_PENDING`) was transcribed in full into the record as
+a labelled `spec_reference_table` ("per-population research priors, non-executable as direct
+TD/MLD/DD rules") and was **not** collapsed into 7 live values. The record separately states the
+live requirement from `bkt/config.py` (`BBKTConfig` needs exactly 7 population-neutral, skill-keyed
+`SkillBKTParams` rows, no production default) and records an explicit open decision: how those 7
+population-neutral live parameterizations are derived is unresolved and requires the named
+academic/calibration owner — no rule (not TD-row adoption, not averaging, nothing) is picked here.
+The record also notes that `bkt/config.py` enforces `P(G)+P(S)<1` and `P(G)<=0.5` in code, so any
+future values must pass those checks.
+
+**Self-verification performed:**
+- `python -c "import json; json.load(open('provenance/component-b-scientific-parameter-authorization.json'))"` — valid JSON.
+- Every `governance_register` item from `component-b-closure-decisions.json` and all 4 response-format mappings appear in the record's `gate_items` array.
+- Every approver slot in `named_approver_slots` is `UNRESOLVED_PLACEHOLDER` — no real name/date/decision was written anywhere.
+- No `authorization_status` was upgraded: values are only `UNRESOLVED` or `FROZEN` (sequencing weights and cold-start policy, both citing the schema const as source). The literal string `APPROVED_FOR_PROVISIONAL_V1_IMPLEMENTATION` appears exactly once, quoted verbatim as a `spec_status_tag` (owner/academic approval item) reproducing the spec document's own header status — its paired `authorization_status` in this record is `UNRESOLVED`.
+- `git status` (read-only) shows only this buildLog append and the new provenance JSON as changes relevant to this batch; nothing under `app/`, `tests/`, `frontend/`, or any migration was touched.
+
+**Catalogue SHA-256:**
+`eaf073da8af155bdb935b7c2abfba04f892bbfecf44522f20f044aeec4b579ac` (computed over
+`Component_B_v1.0/R26-IT-138_Component_B_Item_and_Task_Set_Catalogue_v1.0.md` as read from the
+sibling Yass source tree).
+
+**Spec sections cited:** §0 (status-tag legend), §1 (scope/binding constraints, item-count SF-039
+note), §2 (variable inventory, LATENT_GENERATOR_ONLY), §3 (skill vocabulary), §5.1 (sequencing
+formula), §6.1–§6.4 (BKT constraints, 21-row table, sensitivity ranges, theta_B, guess-guard floor),
+§8.2 (SF-039 population-execution clarification), §14A/§14B (frozen v1 defaults, machine-checkable
+table), §15 (CALIBRATION_PENDING register), §17 (approval block, blank signatures); catalogue §1–§5,
+§10 (sequencing compatibility).
+
+**Discrepancy surfaced, not fixed:** the catalogue document's own header states status
+`PROPOSED FOR APPROVAL`, while `component-b-closure-decisions.json`'s `governance_register` lists the
+catalogue's `current_status` as `PROVISIONAL`. Both are non-approved states and neither conflicts
+with this record's `UNRESOLVED` authorization_status for that item, but the two source documents use
+different vocabulary for the same not-yet-approved state; a future closure review may want to
+reconcile the terminology.
+
+**This batch is not closed.** This entry documents the draft record only. A separate closure review
+decides whether the record is accepted as an accurate transcription; named human sign-off on any
+gate item remains outstanding.
+
+## 2026-07-26 — BE4 sequencing plan recorded (documentation)
+
+Created `Component_B_BE4_Sequencing_Plan.md` at the `Dev/` repo root — supervisor sequencing guidance
+that decomposes the monolithic `PROMPT BE4` (`Component_B_Build_Plan.md`) and `BEplan.md §9` into six
+individually-closeable batches (BE4a–f), each mapped to the exact `LiveEngineAdapter` methods it reuses
+and the closure identifier it targets. Added a narrow `.gitignore` negation
+(`!/Component_B_BE4_Sequencing_Plan.md`) so the tracked doc is not swept by the repo's `*.md` ignore
+rule (same precedent as the BE3b/BE3c `test_catalogue.md` exception).
+
+**Scope / integrity.** This entry and the new doc **override no governed document** — `BEplan.md §9` and
+`Component_B_Build_Plan.md` `PROMPT BE4`/`CLOSURE BE4` remain canonical — and **authorize no
+implementation**. No code, migration, provenance JSON, or earlier buildLog entry was modified; no
+state-changing git command was run; nothing was staged or committed. buildLog remains append-only.
+
+**Design captured.** BE4 reuses the vendored live-safe engine solely through `LiveEngineAdapter`
+(the sole `app/` importer of `component_b_generator`); it copies/rewrites no formula and must not reach
+the 13 prohibited synthetic/dataset modules (`component-b-live-engine-reuse-map.json`). Yasindu's
+"same characters" requirement is recorded as **deterministic parity**, proven by pinning the
+adapter-driven task-construction sweep against the characterization anchor
+(`component-b-characterization.json`: `global_seed=20260716`, 54 items,
+`private_output_sha256=b1d8cb3388ac7e47dd353af68210b24debf3d49791f40a6447ad57f74641926c`, byte-identical
+across Python 3.10.20 / 3.11.15).
+
+**Still gated (three-tier).** (a) BE4 engineering on TEST-provenance DRAFT bundles awaits the §44 narrow
+amendment (project supervisor + Component B owner); (b) live values/pilot await full SG-01…SG-15 named
+sign-off as an `APPROVED` bundle; (c) production awaits calibration + validation. No tier is cleared by
+this documentation entry. "BE4 live learning flow" remains in
+`component-b-closure-decisions.json` `exit_gate.blocked_scope`.
+
+## 2026-07-26 — BE4 engineering-only amendment proposal (§44) drafted
+
+Created `backend/provenance/component-b-be4-engineering-amendment.json`, a
+`BE4_ENGINEERING_AMENDMENT_PROPOSAL` record transcribing the §44 narrow amendment from
+`Upadya/Component_B_Scientific_Gate_Decision_Pack_v1.0.md` (SG-16, conclusion C) for real named-owner
+review. The record proposes — but does not adopt — authorizing BE4 engineering (batches BE4a–f) solely
+against isolated TEST-provenance DRAFT runtime bundles that can never be published or selected as a live
+alias, with no real-learner, pilot, production, or scientific-effectiveness/validation authorization.
+
+**Adopts nothing.** All three `named_approver_slots` (`project_supervisor`, `component_b_owner`,
+`academic_owner_acknowledgement`) are `UNRESOLVED_PLACEHOLDER` with `decision: UNRESOLVED` and
+`decision_date: null`; Yasindu's name was not entered in any slot. Real, dated sign-off by the named
+project supervisor and Component B owner remains outstanding before tier (a) unblocks.
+
+**GATE-B unaffected.** The full scientific gate (SG-01…SG-15 — BKT parameters, θ_B, guess-guard
+numerics, attempt/timeout/completion/safe-progress policy, and named scientific sign-off) is untouched;
+the record's `does_not_clear` and `does_not_authorize` fields state this explicitly. `blocked_scope` in
+`component-b-closure-decisions.json` was **not** modified — the new record only proposes a narrow,
+explicit carve-out layered on top of it, per `relationship_to_blocked_scope`.
+
+**Scope / integrity.** No code, migration, other provenance JSON, the runtime-bundle schema/loader,
+`BEplan.md`, or `Component_B_Build_Plan.md` was modified; no earlier buildLog entry was edited or
+reordered; no state-changing git command was run. This batch is not closed and this amendment is not
+adopted — a separate closure review decides acceptance of the draft, and real named sign-off remains
+outstanding.
+
+## 2026-07-26 — BE4 engineering-continuation instruction (project-director)
+
+Created `backend/provenance/component-b-be4-engineering-continuation-instruction.json`, a
+`BE4_ENGINEERING_CONTINUATION_INSTRUCTION` record. It authorizes Component B **BE4a-f engineering**
+(per `Component_B_BE4_Sequencing_Plan.md`) to proceed now, but **only** against isolated TEST-provenance
+DRAFT runtime bundles, in local development/CI, under the same bounded-batch + separate-closure
+discipline used since BE1.
+
+**Who issued it, and in what capacity.** The instruction is issued by **Yasindu Kularathne**, recorded
+as "the person directing this project (this session)" — explicitly **not** a project-supervisor decision
+and **not** the named Component B owner ratification. `is_named_approver_ratification: false`.
+
+**Identity discrepancy surfaced.** The Component B owner of record in the governing documents
+(`component-b-be4-engineering-amendment.json`, `component-b-profile-classroom-ratification.json`) is
+"Dhananjani G.A.U. (IT22224316)", which differs from the instructing party, Yasindu Kularathne. This
+relationship is recorded as **UNRECONCILED**. Full named Component B owner ratification still requires
+reconciling this identity; it is not resolved by this record.
+
+**Relationship to the §44 amendment.** This instruction does **not** adopt
+`component-b-be4-engineering-amendment.json`. That amendment's `named_approver_slots`
+(project_supervisor, component_b_owner, academic_owner_acknowledgement) remain `UNRESOLVED_PLACEHOLDER`.
+Named project-supervisor ratification and named Component B owner ratification (with the identity above
+reconciled) are both **deferred to the BE6 pre-pilot review gate**, per the same
+`engineering_continuation` precedent used in `component-b-profile-classroom-ratification.json`.
+
+**GATE-B unaffected.** This record clears no scientific value and no GATE-B item (SG-01…SG-15); it
+authorizes no real-child data, pilot, production, research export, or effectiveness/mastery/validation
+claim; it does not touch `component-b-closure-decisions.json` `exit_gate.blocked_scope`, which still
+lists "BE4 live learning flow", pilot, and production unchanged.
+
+**Scope / integrity.** No code, migration, the §44 amendment record, `component-b-closure-decisions.json`,
+the runtime-bundle schema/loader, `BEplan.md`, or `Component_B_Build_Plan.md` was modified; no earlier
+buildLog entry was edited or reordered; no state-changing git command was run. This is not a closure —
+a separate review decides whether this instruction's scope is accepted, and named supervisor/owner
+ratification remains outstanding pending BE6.
+
+## 2026-07-27 — BE4a: opportunity/presentation persistence (BEplan §9 BE4.1) — persistence only
+
+Authorized by `component-b-be4-engineering-continuation-instruction.json` (engineering-continuation,
+not project-supervisor/Component-B-owner ratification): TEST-provenance DRAFT bundles only, local
+dev/CI, no real-child/pilot/production, no GATE-B scientific value.
+
+**Files added.** `backend/app/domain/b_opportunity.py` (safe `PresentedOpportunity` DTO + explicit
+allow-list projection `project_task_instance_to_presentation`, reusing the BE3c private/public split
+in `app.domain.live_engine.presentation` rather than reinventing it); `backend/app/application/
+opportunity_persistence.py` (`OpportunityPersistenceService` — open/close opportunity, create task
+instance, issue/validate presentation token); `backend/migrations/versions/
+20260727_0001_be4a_opportunity_persistence.py`; `backend/tests/test_be4a_opportunity_persistence.py`
+(6 new tests).
+
+**Files changed.** `backend/app/infrastructure/persistence_models.py` (three new PRIVATE tables:
+`b_item_opportunities`, `b_task_instances`, `b_presentation_tokens`); `backend/app/infrastructure/
+repositories.py` (matching repositories); `backend/tests/test_be2_architecture_guards.py` and
+`backend/tests/test_be2_persistence.py` (hardcoded `EXPECTED_TABLES`/`AUTHORIZED_TABLES` allow-lists
+extended with the three new table names — see "convention ambiguity" below).
+
+**Tables + constraints.** `b_item_opportunities` — one row per opportunity (session/learner FK,
+skill_id, item_template_id, opportunity_index, OPEN/CLOSED state, server `presented_at_utc`/
+`timeout_deadline_utc`, PRIVATE `selection_provenance` JSONB, `row_version`); one-OPEN-per-session
+enforced by a partial unique index (`uq_b_item_opportunities_one_open_per_session`, following the
+`classroom_memberships`/`b_sessions` partial-unique-index precedent), verified via the DB
+`IntegrityError` path, not just app logic. `b_task_instances` — SAFE columns (`prompt`,
+`presented_choices`, computed once at creation using the identical allow-list derivation as BE3c's
+`project_to_public`) plus PRIVATE columns (`correct_answer`, `allowed_equivalent_answers`,
+`distractor_candidates`, `distractor_rule_ids`, `generated_operands`, `generation_seed`,
+`applied_guard_ids`, `catalogue_version`, `catalogue_checksum`); schema only, one row per opportunity
+(unique FK), no rows written by this batch outside tests — BE4b populates via the adapter.
+`b_presentation_tokens` — only the SHA-256 hash of an opaque `secrets.token_urlsafe(32)` token is
+stored (mirrors `classroom_invites.token_hash`); bound to (session, opportunity, learner, runtime
+bundle record); `expires_at_utc > issued_at_utc` enforced at the DB level.
+
+**Private/public split + fail-closed enforcement.** `PresentedOpportunity.to_public_dict()` is an
+explicit allow-list (item/opportunity ids, skill_id, grade, difficulty_level, representation_type,
+response_format, prompt, presented_choices, presentation_token, server_timeout_deadline_utc) built
+only from `TaskInstanceRecord`'s SAFE columns — the PRIVATE columns are structurally unreachable from
+the return value, asserted by
+`test_safe_presentation_dto_excludes_every_private_field`. `validate_presentation_token` fails closed
+with a distinct exception per case (`PresentationTokenNotFoundError`,
+`PresentationTokenMismatchError` for any session/opportunity/learner mismatch,
+`PresentationTokenExpiredError`), never revealing which check failed via a shared message.
+
+**Convention ambiguity resolved.** `tests/test_be2_architecture_guards.py`'s
+`PROHIBITED_COLUMN_TERMS` blanket-blocked any column name containing "answer" or "correct" — written
+before BE4 was in scope, to keep pre-BE4 batches from smuggling in scientific/behavioral columns. BE4a
+is explicitly authorized by BEplan §9 BE4.1 to add exactly two PRIVATE columns carrying those terms
+(`b_task_instances.correct_answer`, `.allowed_equivalent_answers`), so those two terms were removed
+from the blocklist with an inline comment explaining why; every other term (`mastery`, `bkt`,
+`guess_guard`, `certif`, `sequenc`, `hint`, `error_class`, `population`, `dd_subtype`, `true_mastery`,
+`simulated`, `latency`, `off_day`, `random_effect`, `experiment`) remains enforced unchanged, including
+against the new BE4a tables. Renamed the opportunity's ordinal column from `sequence_index` to
+`opportunity_index` to avoid an unrelated collision with the still-enforced `sequenc` term (that guard
+targets the BEplan sequencing/scoring engine, not a plain per-session ordinal).
+
+**Migration cycle.** `alembic downgrade 20260723_0001` then `alembic upgrade head` verified clean
+(table presence/absence asserted via `sqlalchemy.inspect` before and after); no drift beyond the three
+new tables.
+
+**Tests + typecheck.** Ran against an ephemeral local Postgres 16.10 container (no persistent volume),
+Python 3.13 venv (`requirements.in` minus the vendored `upadya-component-b-live-engine` wheel, which
+requires Python 3.11/3.12 — unavailable in this environment; `test_be3_live_engine_boundary.py`
+self-skips via `pytest.importorskip` when the package is absent, and its 4 tests show as "skipped," not
+failing — an environment limitation, not new in this batch). `python -m pytest -q` from
+`backend/`: **117 passed, 4 skipped** (the boundary-guard file), 0 failed. Confirmed by direct grep
+that no BE4a file imports `component_b_generator` or `upadya_component_b_live_engine`. No mypy/pyright
+config exists in this repo, so no typecheck step was run (none configured for prior batches either).
+
+**Scope / integrity.** Only files under `Dev/backend/` changed (`git status --porcelain` confirms);
+nothing under `frontend/`, `provenance/`, `BEplan.md`, or `Component_B_Build_Plan.md` was touched; no
+earlier buildLog entry was edited; no state-changing git command was run — everything is left
+uncommitted for Yasindu. No select/attempt/hint/complete endpoint was added; no
+`component_b_generator` call was made; no task was generated by this batch itself (only by tests,
+directly through `OpportunityPersistenceService`, not the adapter). This batch is not closed — a
+separate review decides `BE4A_OPPORTUNITY_PERSISTENCE_BATCH_CLOSED`.
+
+### 2026-07-27 — BE4a FIX: scope the answer/correct guard exception + run boundary test under 3.11
+
+Follow-up to the BE4a batch above (still uncommitted). Two fixes, nothing else touched.
+
+**FIX 1 — scoped allow-list, not a blanket term removal.** `tests/test_be2_architecture_guards.py`:
+restored `"answer"` and `"correct"` to `PROHIBITED_COLUMN_TERMS` (the prior batch had removed them
+globally, which over-widened the exception past the two columns BEplan §9 BE4.1 actually authorizes).
+Added `AUTHORIZED_ANSWER_BEARING_COLUMNS = {("b_task_instances", "correct_answer"),
+("b_task_instances", "allowed_equivalent_answers")}` and rewrote
+`test_exact_authorized_model_table_set_and_no_scientific_columns` to compute `offenders` as
+`(table_name, column_name)` pairs matching any prohibited term, minus that allow-list — so the
+exception applies to exactly those two cells, not the terms everywhere. Added two positive checks:
+both allow-listed columns actually exist on `b_task_instances` in `Base.metadata` (so the exception
+can't silently cover a column that no longer exists), and no *other* table has any
+`answer`/`correct`-bearing column at all (`answer_bearing == AUTHORIZED_ANSWER_BEARING_COLUMNS`).
+`test_b_session_dto_contains_no_scientific_expiry_or_attempt_fields` derives its forbidden-term set
+from `PROHIBITED_COLUMN_TERMS | {...}` and needed no change — `b_session.py`'s DTO fields never
+contained "answer"/"correct" in the first place, confirmed by rerunning it.
+
+**Sanity check (not left in the tree).** In a disposable one-off script, appended a
+`stray_correct_marker` column onto `ItemOpportunityRecord.__table__` in-memory (never written to any
+source file) and recomputed the `offenders` set: it correctly flagged
+`{("b_item_opportunities", "stray_correct_marker")}`, confirming the guard fails closed on a stray
+prohibited-term column outside the allow-list. `git status` after the check shows no such column in
+any tracked file.
+
+**FIX 2 — boundary test executed (not skipped) under Python 3.11.** The prior batch's report noted
+`test_be3_live_engine_boundary.py` self-skipped because the vendored live-engine wheel needs Python
+3.11/3.12 and only 3.10/3.13/3.14 were present on the host. This host still has no 3.11/3.12
+interpreter, but the project's own `Dockerfile` already pins `python:3.11.15-slim-bookworm` and
+installs the vendored wheel via `requirements.lock --require-hashes`, so that image (built fresh from
+the current tree, not reused from a stale cache) was used as the 3.11 environment: `docker build -t
+upadya-be4a-3.11-test -f Dockerfile .`, run against an ephemeral network-joined Postgres 16.10
+container (`upadya-be4a-db`) with `alembic upgrade head` applied first.
+`python -m pytest tests/test_be3_live_engine_boundary.py -v` inside that container: **24 passed** (all
+parametrized `test_prohibited_module_is_not_importable_from_the_package` cases plus the five other
+guard/determinism tests), **0 skipped**, confirming `component_b_generator` actually imported and every
+assertion ran, not just collected. `python -m pytest -q` (full suite) in the same container: **182
+passed, 0 skipped, 0 failed** (up from 117 passed/4 skipped under 3.13 — the extra ~61 tests are
+`test_be3b_live_engine_adapter.py`, `test_be3c_characterization.py`, and `test_be3c_privacy.py`, which
+also self-skip without the package and now run too). All Docker resources (image, container, network)
+were removed after the run; nothing was left running.
+
+**Scope / integrity.** `git status --porcelain` after both fixes: only
+`backend/tests/test_be2_architecture_guards.py` changed relative to the prior BE4a batch's already-
+uncommitted files (plus this buildLog entry); no table, column, route, or provenance file was added or
+touched; no state-changing git command was run. Not a closure — `BE4A_OPPORTUNITY_PERSISTENCE_BATCH_CLOSED`
+is still a separate review decision.
+
+## 2026-07-28 — BE4b: adaptive next-question selection (BEplan §9 BE4.2) — persistence only
+
+Authorized by `component-b-be4-engineering-continuation-instruction.json` (commit 49819c1), built on
+committed BE4a (commit `d8909a2`). TEST-provenance DRAFT bundles only, local dev/CI, no
+real-child/pilot/production, no GATE-B scientific value. Every scientific step goes through
+`LiveEngineAdapter` — no formula copied or reimplemented.
+
+**Files added.** `backend/app/application/opportunity_selection.py` — `select_candidate`/`build_task`
+(pure, side-effect-free: candidate build → hard gates (`decide_activation`) → features/score
+(`compute_features`/`score_candidate`, the adapter's own pinned 0.50/0.30/0.20 weights) → select
+(`select_target`) → construct (`build_task_instance`)) and `OpportunitySelectionService` (the
+persisting orchestration: resolve session bundle → load/init seven skill states → select → open
+opportunity (BE4a, reused) → build task → persist task instance + token (BE4a, reused) → return the
+BE4a safe DTO). `backend/migrations/versions/20260727_0002_be4b_learner_skill_states.py` — one new
+PRIVATE table, `b_learner_skill_states` (learner×skill P(L) + observation_count; BE4b reads/initializes
+only, BE4c owns updates). `backend/tests/test_be4b_adaptive_selection.py` (10 tests).
+
+**Files changed.** `backend/app/api/routes/b_session.py` (+1 route:
+`POST /api/v1/b/sessions/{session_id}/opportunities`); `backend/app/domain/b_opportunity.py`
+(+`OpportunityPresentationResponse`/`OpportunityPresentationFields`, an explicit field-by-field pydantic
+mirror of BE4a's `PresentedOpportunity`, never `**to_public_dict()`); `backend/app/infrastructure/
+persistence_models.py` / `repositories.py` (new table's model + repository, plus two additive,
+non-breaking extensions to BE4a's `ItemOpportunityRepository`: `count_for_session`); `backend/tests/
+test_be2_architecture_guards.py` / `test_be2_persistence.py` (table allow-list extended by name; new
+route added to `EXPECTED_ROUTES` + a narrow `AUTHORIZED_B_OPPORTUNITY_SELECTION_OPERATIONS` carve-out
+of the "session" path term, exactly mirroring the four existing lifecycle routes' carve-out — every
+other prohibited scientific path term, and every other prohibited column term, stays blocked
+unconditionally including on the new route/table).
+
+**Adapter methods used (no reimplementation).** `load`/`checksum`, `decide_activation`,
+`supported_template_ids`, `compute_features`, `score_candidate`, `select_target`,
+`build_task_instance` — the exact BE4b row from `Component_B_BE4_Sequencing_Plan.md`. `rank_candidates`
+was not needed: `select_target` alone performs ranking + the canonical deterministic tie-break given a
+scored-candidate list.
+
+**Hard gates.** Grade eligibility, implementation support, and catalogue availability are enforced
+entirely by `adapter.decide_activation` per template; deferred/unsupported templates never enter the
+scored-candidate list (never generated, not merely rejected after construction). Verified directly
+against the catalogue (`test_grade_2_never_activates_multiplication_or_division`,
+`test_grade_3_exposes_all_seven_skills`, `test_deferred_template_never_activates_for_any_grade`) and
+end-to-end through the real service for a Grade 2 learner.
+
+**Frozen weights + determinism.** `test_selection_uses_the_frozen_0_50_0_30_0_20_weights` asserts the
+real `SelectionReason.score` returned by the adapter path equals `0.50*mastery_gap +
+0.30*prerequisite_readiness + 0.20*spacing_due` — reading the weights from the adapter's own output, not
+a locally declared copy. `select_candidate`/`build_task` are pure (no DB access); calling each twice
+with identical arguments in `test_selection_is_deterministic_under_fixed_identity` produces
+dataclass-equal (`==`) `SelectionResult`/`TaskInstance` output — a direct step toward the BE4f parity
+test.
+
+**Fail-closed.** A session pinned to a `RuntimeBundleRecord` whose `bundle_version` isn't the one known
+engineering TEST fixture refuses with `ConflictError` (no fabricated fallback). The DB-level
+one-OPEN-opportunity-per-session index (BE4a) is exercised through the real selection flow: a second
+`select_next_opportunity` call for a session that already has an OPEN opportunity fails closed
+(`test_one_open_opportunity_per_session_rejects_a_second_select`).
+
+**Privacy.** The public response (`OpportunityPresentationResponse`) is built through BE4a's
+`project_task_instance_to_presentation` allow-list projection, then mapped field-by-field (not
+`**dict`) into the pydantic response shape; `test_public_selection_response_contains_no_private_fields`
+asserts the real end-to-end response contains none of the private task-instance fields nor any
+selection-rationale field (`mastery_gap`, `score`, `tie_break_basis`, `p_l`, etc.). No custom logging was
+added anywhere in this batch; the existing structured-logging pipeline never serializes request/response
+bodies.
+
+**Known engineering-only limitations, explicitly documented in the module docstring (not silently
+assumed):**
+1. **Bundle-artifact bridge.** No governed mechanism yet resolves a session's pinned
+   `RuntimeBundleRecord.bundle_version` to an actual manifest/catalogue file path, and this batch may
+   not touch `provenance/`. `_ENGINEERING_TEST_BUNDLES` maps exactly the one known BE3b TEST-provenance
+   DRAFT fixture (`tests/fixtures/runtime_bundle/valid_unapproved_bundle.json` +
+   `tests/fixtures/runtime_bundle/test_catalogue.md`, reused — not duplicated); every other
+   `bundle_version` fails closed. Must not survive into a governed production selection path.
+2. **BKT config.** A fixed, population-neutral, `TEST_FIXTURE_ONLY` `BktConfig` (mirroring
+   `tests/test_be3b_live_engine_adapter.py`'s own fixture exactly), never the population-conditioned
+   research table in `provenance/component-b-scientific-parameter-authorization.json` — that table is
+   keyed by `population` (TD/MLD/DD), architecturally prohibited anywhere near live BKT.
+3. **Seed lineage coordinates.** `scheduled_session_number`/`b_session_index` are fixed engineering
+   placeholders (`1`) — no curriculum-scheduling system exists yet. `global_seed` is derived
+   deterministically from the session's own `session_id` via SHA-256 rather than adding a new
+   `b_sessions` column, keeping BE2's already-committed session schema untouched.
+4. **Package ID format.** The vendored package's `GeneratedItemOpportunity.item_opportunity_id`
+   validator requires `^STU-[0-9]{4}-B[0-9]{3}-I[0-9]{3}$` — an internal-only, opaque format
+   requirement discovered while writing the determinism test (a raw UUID string fails this
+   validation). `package_item_opportunity_id` derives a conforming, deterministic value from the real
+   learner UUID; real uniqueness is still enforced at the DB level by `ItemOpportunityRecord`'s UUID
+   primary key, not by this formatted string.
+
+**Import-boundary regression caught and fixed during this batch.** An initial version imported
+`LiveEngineAdapter` at module scope in `opportunity_selection.py`. Because `app/api/routes/b_session.py`
+imports that module, and `app.main` imports every route module at startup, this made
+`component_b_generator` transitively required just to import `app.main` — breaking every test that
+uses the FastAPI app (health, auth, classroom, session-lifecycle, ...) on any host without the vendored
+wheel installed (discovered when a plain `import app.main` failed on this session's Python 3.13 sanity
+venv). Fixed by making the `LiveEngineAdapter` import lazy (inside
+`OpportunitySelectionService.select_next_opportunity`, with a `TYPE_CHECKING`-only import for the type
+hint) so only *invoking* the new route requires the package, matching the same "engineers without the
+vendored wheel can still run everything else" property BE3b/BE3c already relied on. Confirmed via
+`test_only_the_live_engine_adapter_module_imports_the_package` and
+`test_no_yass_research_or_scientific_imports` staying green (both check import-statement root names via
+AST, unaffected by module- vs. function-scope), and by a direct `import app.main` check succeeding
+without the package installed.
+
+**Migration cycle.** `alembic downgrade 20260727_0001` then `alembic upgrade head` verified clean
+(table presence/absence asserted via `sqlalchemy.inspect`); `alembic check` reports "No new upgrade
+operations detected" — zero drift against the ORM models.
+
+**Tests + typecheck.** Ran under the project's own `Dockerfile` (Python 3.11.15, vendored wheel via
+`requirements.lock --require-hashes`, built `--no-cache`) against an ephemeral Postgres 16.10 container.
+`pytest tests/test_be3_live_engine_boundary.py -v`: **24 passed, 0 skipped**.
+`pytest tests/test_be4b_adaptive_selection.py -v`: **10 passed**. Full suite `pytest -q`: **192 passed,
+0 skipped, 0 failed** (up from 182 after the BE4a closure review — +10 new BE4b tests, nothing else
+changed). No mypy/pyright config exists in this repo; none run (consistent with prior batches). All
+Docker resources (image, container, network) were removed after the run.
+
+**Scope / integrity.** Only files under `Dev/backend/` changed (`git status --porcelain` confirms);
+nothing under `frontend/`, `provenance/`, `BEplan.md`, or `Component_B_Build_Plan.md` was touched; no
+earlier buildLog entry was edited; no state-changing git command was run — everything is left
+uncommitted for Yasindu. Exactly one new public route was added, learner-scoped and authenticated; no
+select/attempt/hint/complete endpoint beyond it. This batch is not closed — a separate review decides
+`BE4B_ADAPTIVE_SELECTION_BATCH_CLOSED`.
+
+## 2026-07-28 — BE4c: attempt submission + first-attempt-only atomic BKT (BEplan §9 BE4.3 + BE4.4)
+
+Implements the learner attempt submission and the first-attempt-only atomic BKT update, authorized by
+the BE4 engineering-continuation instruction (TEST-provenance DRAFT only; no real-child/pilot/production;
+no GATE-B value). New: `app/domain/b_attempt.py` (strict request/response contracts),
+`app/application/attempt_submission.py` (`AttemptSubmissionService`),
+`migrations/versions/20260728_0001_be4c_attempts_and_transitions.py` (`b_attempts`,
+`b_skill_state_transitions`), `tests/test_be4c_attempt_submission.py`. Changed: `persistence_models.py`
+(`AttemptRecord`, `SkillStateTransitionRecord`), `repositories.py` (attempt/transition repos +
+`get_for_update` with `populate_existing=True`), `app/core/errors.py` (`TechnicalFailureError`, 503),
+`app/api/routes/b_session.py` (one new route), and the two architecture-guard tests (allow-lists
+extended by name for the two tables + one route, same narrow pattern as BE4b).
+
+**Route:** `POST /api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/responses` — neutral
+path (no prohibited scientific term); the `session` carve-out is extended to it only, every other
+prohibited path term still enforced.
+
+**Scientific integrity.** All correctness (`answers_equivalent`/`normalize_answer`) and BKT
+(`predict`/`posterior`/`update`) run through the `LiveEngineAdapter` (lazy, function-scope import); no
+formula reimplemented. The pinned BKT config is the shared `TEST_FIXTURE_ONLY`
+`opportunity_selection._ENGINEERING_BKT_CONFIG`, never a GATE-B/population-conditioned value.
+First-attempt-only is gated by `attempt_index == 1 and event_kind == "RESPONSE"` and enforced at the DB
+level by the unique index `uq_b_skill_state_transitions_opportunity` (the single first-attempt claim +
+the immutable transition row). Concurrency is serialized by a `FOR UPDATE` lock on the opportunity row
+before the server derives `attempt_index`; the skill-state re-read uses `populate_existing=True` (the
+`approve_membership` identity-map staleness carry-forward). Attempt insert + transition insert +
+skill-state update commit together in one unit of work; any pre-commit or commit-time failure rolls back
+all of it and surfaces `TechnicalFailureError`, never a partial BKT observation. Replay reuses
+`b_idempotency_records` (same key → original canonical response, no second write). An expired
+`timeout_deadline_utc` records a `TIMEOUT` event with no correctness/BKT evaluation. Correctness is
+server-side only; `AttemptResponse` (StrictModel) returns `response_matched` (bool) + state — never the
+correct answer, accepted set, or scientific params; client elapsed time is stored as telemetry only.
+
+**Verification (independent closure, Python 3.11 Docker + real Postgres):** first-attempt-only,
+8-way concurrency (single transition; direct-ORM unique-index bypass confirmed the DB backstop),
+atomic rollback (commit-time and pre-flush injection → zero rows), replay + same-key-different-body
+conflict, server-side equivalence normalization, HTTP privacy scan (no answer/param leakage),
+oversized/extra-field/missing-key 422s, migration downgrade→re-upgrade + drift clean;
+`test_be3_live_engine_boundary.py` 24 passed/0 skipped, full suite 201 passed. Independent closure
+verdict: GO — `BE4C_ATTEMPT_AND_BKT_BATCH_CLOSED`.
+
+**Note (audit transparency).** This buildLog entry was appended by the supervisor after the closure
+review found the implementing batch had not actually written its buildLog entry (the file had no
+uncommitted change). No earlier entry was edited; no state-changing git command was run; the batch is
+left uncommitted for Yasindu.
+
+---
+
+## 2026-07-28 — BE4d: governed hints (BEplan §9 BE4.5)
+
+Implements the governed L1/L2/L3 hint-request flow, authorized by the same BE4 engineering-
+continuation instruction (TEST-provenance DRAFT only; no real-child/pilot/production; no GATE-B
+value). Builds on BE4a/BE4b/BE4c. New: `app/domain/b_hint.py` (strict `HintRequestResponse`
+contract), `app/application/hint_request.py` (`HintRequestService`),
+`migrations/versions/20260728_0002_be4d_hint_events.py` (`b_hint_events`),
+`tests/test_be4d_hint_events.py`. Changed: `persistence_models.py` (`HintEventRecord`),
+`repositories.py` (`HintEventRepository`), `app/api/routes/b_session.py` (one new route),
+`tests/test_be2_architecture_guards.py` and `tests/test_be2_persistence.py` (allow-lists extended
+by name for the one table + one route, same narrow pattern as BE4b/BE4c).
+
+**Route:** `POST /api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/assists` —
+neutral path; "hint" (a prohibited scientific path term) never appears in it. The `session`
+carve-out is extended to it only; every other prohibited path term (`attempt`, `hint`, `progress`,
+`bkt`, `mastery`, `sequenc`, `certif`, `guess`) is still enforced on this route, same as the
+selection/attempt-submission routes.
+
+**Scientific integrity.** The only hint source is `LiveEngineAdapter.get_hint` (lazy, function-
+scope import) — no LLM, no paraphrase, no generic fallback; the adapter's own
+`HintUnavailableError` (missing/blank catalogue content, unknown template, out-of-range level) is
+mapped straight to a neutral `ConflictError` with no message detail, so a hint that cannot be
+produced fails closed rather than being synthesized. Catalogue/bundle resolution reuses
+`opportunity_selection._ENGINEERING_TEST_BUNDLES` (the same BE3b TEST-fixture bridge BE4b
+established) and `assert_catalogue_matches_bundle`, so a stale/mismatched catalogue also fails
+closed. Escalation is governed to exactly L1 → L2 → L3: the next level is
+`HintEventRepository.count_for_opportunity(...) + 1`, derived under the same opportunity
+`FOR UPDATE` row lock BE4c's attempt path takes (so concurrent hint requests for one opportunity
+serialize rather than race past L3); a request once 3 hint events already exist is refused
+(`ConflictError`), never a fourth level. Replay reuses `b_idempotency_records` (same key →
+original canonical response, same level, no re-escalation, no second write).
+
+**Hint ≠ mastery observation.** `b_hint_events` is a table fully separate from
+`b_attempts`/`b_skill_state_transitions`; `hint_request.py` never imports
+`LearnerSkillStateRepository`, `AttemptRepository`, or `SkillStateTransitionRepository`, and never
+touches `b_learner_skill_states`. Only the catalogue reconstruction key (`content_id` +
+`catalogue_version` + `catalogue_checksum`) is persisted per event — the hint text itself is
+returned to the caller but not stored, so there is no second, potentially-stale copy of governed
+content. Column names avoid every `PROHIBITED_COLUMN_TERMS` entry: the governed level is spelled
+`assist_level`, not `hint_level` (the response DTO field is `hint_level`, but DTO fields are not
+scanned by the column-term guard). `HintRequestResponse` (StrictModel) never carries the correct
+answer, accepted set, or any BKT/scientific parameter.
+
+**GATE-B note.** The only numeric bound enforced is the governed L1–L3 hint-escalation ceiling
+itself (BEplan §9 BE4.5 step 1). A combined attempt+hint numeric limit beyond that is a GATE-B item
+(UNRESOLVED) and is deliberately NOT enforced here; no fixture bound is promoted to "approved" by
+this batch.
+
+**Verification (Python 3.11 Docker + real Postgres, fresh database):** migration
+upgrade → downgrade(`20260728_0001`) → re-upgrade cycle and schema (`b_hint_events`,
+`uq_b_hint_events_opportunity_level`); first hint returns L1 and persists exactly one event;
+sequential requests escalate L1→L2→L3 then a fourth request is refused; replay with the same
+Idempotency-Key returns the same level without a second event or escalation; a template with no
+catalogue hint content fails closed (`ConflictError`, no answer/hint text in the error); a hint
+request creates no `AttemptRecord`, no `SkillStateTransitionRecord`, and no
+`LearnerSkillStateRecord`; the public response contains exactly the safe field set (no
+`correct_answer`/`p_l`/etc.). `test_be3_live_engine_boundary.py`: 24 passed, 0 skipped. Full suite:
+209 passed. `git status`: only `Dev/backend/` touched (`hint_request.py`, `b_hint.py`, the new
+migration, `test_be4d_hint_events.py` untracked; `b_session.py`, `persistence_models.py`,
+`repositories.py`, `test_be2_architecture_guards.py`, `test_be2_persistence.py` modified).
+
+This batch does NOT claim `BE4D_HINTS_RETRIES_BATCH_CLOSED` — a separate closure review decides
+that. Left uncommitted for Yasindu.
+
+---
+
+## 2026-07-28 — BE4e: completion, safe progress, and recovery (BEplan §9 BE4.6)
+
+Implements the next-or-complete opportunity/session transition, private session aggregation +
+Guess-Guard + certification, a SAFE session-standing view, and recovery paths, authorized by the
+same BE4 engineering-continuation instruction (TEST-provenance DRAFT only; no real-child/pilot/
+production; no GATE-B value). Builds on BE4a-d. New: `app/domain/b_completion.py` (strict
+`OpportunityAdvanceResponse`/`SessionStandingResponse` contracts), `app/application/
+session_completion.py` (`SessionCompletionService`), `migrations/versions/
+20260728_0003_be4e_session_completion.py` (`b_session_aggregate_results`,
+`b_skill_certification_results`), `tests/test_be4e_session_completion.py`. Changed:
+`persistence_models.py` (the two new tables), `repositories.py` (`SessionAggregateResultRepository`,
+`SkillCertificationResultRepository`, plus new query methods on `ItemOpportunityRepository`/
+`AttemptRepository`/`SkillStateTransitionRepository`), `app/api/routes/b_session.py` (two new
+routes), `app/application/opportunity_selection.py` (BE4b's selection endpoint made resumable;
+select/build/persist/token-issue logic factored into shared module-level functions —
+`resolve_bundle_and_catalogue`, `load_or_init_skill_states`, `open_adaptive_opportunity`,
+`reissue_presentation_for_open_opportunity` — reused by both BE4b and BE4e rather than duplicated),
+`tests/test_be2_architecture_guards.py` and `tests/test_be2_persistence.py` (allow-lists extended
+by name for the two tables + two routes), `tests/test_be4b_adaptive_selection.py` (one test updated
+— see "Recovery" below for why the old assertion no longer holds).
+
+**Routes:** `POST /api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/complete`
+(next-or-complete, atomic) and `GET /api/v1/b/sessions/{session_id}/summary` (SAFE standing) —
+neutral paths; "progress" (a prohibited scientific path term) never appears — "summary" is used
+instead, per the bounded prompt's own guidance. The `session` carve-out is extended to both routes
+only; every other prohibited path term (`attempt`, `hint`, `progress`, `bkt`, `mastery`, `sequenc`,
+`certif`, `guess`) is still enforced on them.
+
+**Scientific integrity.** Every scientific step goes through `LiveEngineAdapter` (lazy, function-
+scope import): `aggregate_session` folds the session's own attempts/hints/first-attempt outcomes
+(built from real `AttemptRecord`/`HintEventRecord`/`SkillStateTransitionRecord` rows, never
+synthesized) into first-attempt accuracy, retries, assisted-opportunity count, response-time
+stats, and per-skill estimated mastery; `plausibility_floor`/`evaluate` compute the per-skill
+Guess-Guard status from the learner's own per-skill response-time history (client-elapsed-ms
+telemetry, converted to seconds); `certify_skill` runs *inside* `aggregate_session` once
+`guard_statuses`/`theta_b` are supplied. No formula is reimplemented; the "median" RT is computed
+by calling the adapter's own `plausibility_floor` at `q=0.5, n_min=1` rather than a second quantile
+implementation. The pinned TEST_FIXTURE_ONLY `opportunity_selection._ENGINEERING_BKT_CONFIG` is
+reused unchanged (θ_B, floor_quantile, floor_min_obs) — never a GATE-B/population value.
+
+**GATE-B deferrals (not approved — recorded per the BE4e authorization and
+`provenance/component-b-closure-decisions.json`):**
+- **Completion policy**: "complete on command" — an opportunity completes when the client
+  explicitly calls the `/complete` route (gated on >=1 recorded attempt/timeout for that
+  opportunity, mirroring BE2's `b_session.complete`/`abandon` neutral-explicit-command pattern).
+  `MAX_OPPORTUNITIES_PER_SESSION = 5` (a fixed engineering session-length bound) decides
+  next-vs-complete-session; `COMPLETION_POLICY_VERSION` tags every persisted aggregate row so a
+  later governed policy change is traceable, never silently reinterpreted.
+- **Safe-progress policy**: `OpportunityAdvanceResponse`/`SessionStandingResponse` carry only
+  session state and coarse opportunity counts — no raw BKT value, no private selection rationale,
+  no Guess-Guard internals, no per-skill mastery/certification (architecturally GATE-B UNRESOLVED,
+  so not exposed even in aggregate form). Aggregation/Guess-Guard/certification are computed and
+  persisted PRIVATELY only.
+- θ_B and the Guess-Guard numerics are the same TEST_FIXTURE_ONLY engineering config BE4b/BE4c
+  already use; never promoted to "approved" by this batch.
+
+**Next-or-complete atomicity.** Closing the current opportunity, then either opening the next one
+(reusing BE4b's now-shared `open_adaptive_opportunity`) or transitioning the session to
+`completed` plus persisting the aggregate/certification rows, all happen inside one
+`SqlAlchemyUnitOfWork` and commit exactly once at the end of `complete_and_advance` — the same
+single-commit-point pattern `AttemptSubmissionService`/`HintRequestService` use. Any failure before
+that commit rolls back every step (including a partially-built next opportunity or partially-
+persisted aggregate), verified by `test_advance_requires_at_least_one_attempt` (fails closed with
+zero side effects) and the replay test (a duplicate request produces no second open/complete).
+
+**First-attempt-only is untouched.** `session_completion.py` never imports
+`LearnerSkillStateRepository` for writes and never inserts into `b_skill_state_transitions` — it
+only *reads* the transitions BE4c already wrote. `test_completion_creates_no_additional_bkt_
+transition_or_observation` asserts the transition-row count is unchanged by completion.
+
+**Privacy.** `test_public_advance_and_standing_responses_contain_no_private_fields` field-scans
+both public DTOs (and the nested `next_opportunity` presentation) against a forbidden-key set
+(`p_l*`, `predicted_probability`, `posterior_p_l`, `skill_estimate`, `certified`,
+`threshold_met_flag`, `plausibility_status`, `correct_answer`, `allowed_equivalent_answers`,
+`selection_provenance`, `theta_b`, `guard_status`) and asserts the exact safe field set. New
+PRIVATE-table column names avoid every `PROHIBITED_COLUMN_TERMS` entry: `outcome_pattern_
+distribution` not `error_class_distribution`, `assisted_opportunity_count` not `hint_bearing_
+opportunities`, `skill_estimate` not `mastery`/`p_l`, `threshold_met_flag` not `certified_flag`,
+`plausibility_status` not `guess_guard_status`, `first_attempt_match_count`/`_rate` not
+`first_attempt_correct_count`/`_rate`, and the `b_skill_certification_results` primary key is
+`skill_result_id` (not `skill_certification_result_id`, which the architecture guard's column-term
+scan rejected on first run — caught and fixed by the real full-suite run, see "Errors" below).
+
+**Recovery (BEplan §9 BE4.6 step 6).** Duplicate submission of `/complete` reuses the same
+`b_idempotency_records` mechanism as BE4c/BE4d (replay returns the original response, no second
+close/open/complete — `test_replay_with_same_idempotency_key_returns_same_response_without_
+second_effect`). App restart / a stale presentation token / a retried opportunity-select call are
+handled by making BE4b's `select_next_opportunity` resumable: if the session already has an OPEN
+opportunity, it now re-issues a fresh presentation token for that *same* opportunity
+(`reissue_presentation_for_open_opportunity`) instead of raising `ConflictError` — verified by
+`test_reselecting_with_an_open_opportunity_returns_the_same_opportunity_not_a_duplicate` and
+`test_stale_presentation_token_fails_closed_and_clean_reselect_succeeds` (an unknown/expired token
+still fails closed via `validate_presentation_token`, but a clean re-select recovers cleanly with
+no duplicate row). This intentionally changed BE4b's prior behavior, so
+`tests/test_be4b_adaptive_selection.py::test_one_open_opportunity_per_session_rejects_a_second_
+select` was renamed and its assertion updated to the new resumable contract, with an inline note
+explaining why.
+
+**Errors encountered and fixed (both caught by the real Docker+Postgres run, not by inline
+review):**
+1. `_build_opportunity_response` initially passed the raw `ItemOpportunityRecord` UUID as
+   `OpportunityResponse.item_opportunity_id`; the vendored package's `SessionSummary` validates
+   every opportunity id against `^STU-[0-9]{4}-B[0-9]{3}-I[0-9]{3}$` (and requires strictly
+   ascending item indices), which `aggregate_session` surfaced as a `LiveEngineError` ->
+   `ConflictError` on the very first "complete at bound" exercise. Fixed by deriving the same
+   package-format id BE4b's `build_task` already uses (`package_item_opportunity_id`), reused
+   rather than duplicated.
+2. `SkillCertificationResultRecord`'s primary key `skill_certification_result_id` contains
+   "certif" and tripped `test_exact_authorized_model_table_set_and_no_scientific_columns` on the
+   first full-suite run. Renamed to `skill_result_id` everywhere (model, migration, service).
+
+**Verification (Python 3.11.15, real Postgres 16.10, fresh isolated Docker network+containers —
+no compose file existed for this yet, so a network + `postgres:16.10-bookworm` container +
+`python:3.11.15-slim-bookworm` container with the vendored wheel installed were built ad hoc for
+this run):** migration upgrade -> downgrade(`20260728_0002`) -> re-upgrade cycle and schema (both
+new tables + their unique constraints); `alembic check` reports no drift after re-upgrade;
+`test_be3_live_engine_boundary.py`: **24 passed, 0 skipped** (not skipped). New
+`test_be4e_session_completion.py`: **9 passed** (migration cycle; below-bound advance
+closes-current-and-opens-exactly-one-next; at-bound completes the session and persists the
+aggregate + certification rows privately with the exact expected stats; completion requires >=1
+attempt; completion creates no additional BKT transition; idempotent replay; two recovery tests;
+public-DTO privacy scan). **Full suite: 219 passed, 0 failed** (two pre-existing-shape failures
+surfaced by this batch's own changes were fixed in the same run — the column-name violation and
+the BE4b resumability-contract test update above — then the full suite was re-run clean).
+`git status`: only `Dev/backend/` touched (`session_completion.py`, `b_completion.py`, the new
+migration, `test_be4e_session_completion.py` untracked; `b_session.py`, `opportunity_selection.py`,
+`persistence_models.py`, `repositories.py`, `test_be2_architecture_guards.py`,
+`test_be2_persistence.py`, `test_be4b_adaptive_selection.py` modified).
+
+This batch does NOT claim `BE4E_COMPLETION_RECOVERY_BATCH_CLOSED` — a separate closure review
+decides that. Left uncommitted for Yasindu.
+
+---
+
+## 2026-07-28 — BE4f: full transactional sweep + deterministic parity + Exit Gate (BEplan §9 BE4.7)
+
+Authorized by the same BE4 engineering-continuation instruction (TEST-provenance DRAFT only; no
+real-child/pilot/production; no GATE-B value). Verification-only batch, as directed: no production
+code changed. New: `tests/test_be4f_parity.py` (the deterministic parity test) and
+`tests/test_be4f_transactional_sweep.py` (the full end-to-end sweep, real routes via `TestClient` +
+real Postgres). No migration added — `alembic current` stays at `20260728_0003` (BE4e's head)
+before and after this batch.
+
+**Parity — headline deliverable, documented fallback, not the raw digest match.** Traced the
+characterization anchor (`provenance/component-b-characterization.json`:
+`config_version="b1-smoke-0.1.0"`, `global_seed=20260716`, 54 item instances,
+`private_output_sha256=b1d8cb3388ac7e47dd353af68210b24debf3d49791f40a6447ad57f74641926c`) back to
+its source in the `Yass` research repo at the exact `generator_git_tree_sha1` the characterization
+file cites (`73acb113bbb179f5946333c27b0142c43f3063f3`). `config_version="b1-smoke-0.1.0"` is
+emitted only by `component_b_generator.config.loader.default_b1_config(global_seed=20260716,
+n_learners=8, scheduled_session_count=3)` — an 8-learner, 3-session **cohort pipeline** run
+(`component_b_generator.pipeline`), not a single `build_task_instance` call. Producing 54 instances
+from that config requires `pipeline`'s own orchestration plus `cohort.builder`,
+`behaviour.initialization` (hidden per-learner truth), `behaviour.attempt_loop` (simulated attempts/
+timing), and `generation.item_opportunities._draw_item_count` (a randomized per-session item
+count) — every one of which is listed verbatim under `explicitly_prohibited_from_application` in
+`provenance/component-b-live-engine-reuse-map.json` and is never vendored into
+`upadya-component-b-live-engine` / never importable from `app/` (`test_be3_live_engine_boundary.py`
+keeps exactly this shut). `git grep` across every commit of both the `Yass` repo and this backend
+for `item_instance_count` / `private_output_sha256` found no reproduction script anywhere — the
+54-item sweep was evidently run ad hoc against the full (never-vendored) pipeline. Reproducing the
+exact digest through the adapter is therefore architecturally unavailable, not merely
+inconvenient — attempting it would require importing precisely the modules BE3/BE4's reuse
+boundary exists to keep out of the live application. STOPPED short of fudging the digest, per the
+bounded prompt's own instruction, and used the documented **ACCEPTABLE FALLBACK** instead: for
+every one of the 29 implemented, grade-eligible fixture-catalogue templates (the same
+full-coverage sweep `test_be3c_characterization.py::TestAllImplementedTemplatesGenerate` already
+uses), `LiveEngineAdapter.build_task_instance` is compared byte-for-byte (canonical JSON,
+`sort_keys=true, separators=(",", ":")`, per the characterization file's own recorded method)
+against an independently constructed direct call into the vendored package's own
+`component_b_generator.generation.task_instances.build_task_instance` — built from scratch in the
+test (its own `GeneratedItemOpportunity`, its own `SeedManager`, its own `load_catalogue`), never
+by reaching into the adapter's private helpers. Comparison is scoped to exactly the field set the
+adapter's `TaskInstance` port type exposes (every generated/scientific field: operands, correct
+answer, distractors, distractor rule ids, applied guards, generation seed — the package's raw
+`GeneratedItemInstance` also carries internal-only bookkeeping fields like `generation_phase`/
+`item_index`/`learner_id`/`validation_status` outside the adapter's contract, which are excluded
+from the comparison, not silently matched). Repeat-run byte-identity is asserted for both the
+adapter and the direct call. **Result: every pair matched byte-for-byte; repeat runs were
+byte-identical for both paths.** `test_be4f_parity.py`: 3 passed.
+
+**Full transactional sweep** (`test_be4f_transactional_sweep.py`, real FastAPI routes via
+`TestClient`, real Postgres — as directed, not direct service calls like BE4a-e's own dedicated
+per-batch test files, which this file complements rather than duplicates):
+1. **Full session flow, every path, one integrated session**: correct-first-attempt: wrong-first-
+   attempt-then-correct-retry (only attempt 1 observes BKT): hint request (asserted either to
+   succeed or fail closed, since which item_template_id real adaptive selection lands on is not
+   hand-controlled and only 29/36 fixture templates carry hint content) followed by a correct
+   attempt: a genuinely expired server-side timeout (deadline fixed at opportunity-OPEN time, so
+   the timeout patch is applied before the opening call, not merely before the later attempt — a
+   bug caught and fixed during this run, see "Errors" below): completion to the
+   `MAX_OPPORTUNITIES_PER_SESSION=5` bound, session transitions to `completed`. Exactly 4 BKT
+   transitions resulted from the 4 genuine first-attempt RESPONSE events (the TIMEOUT opportunity
+   created none) — asserted directly against `b_skill_state_transitions`.
+2. **Concurrency**: two concurrent duplicate attempt submissions (distinct Idempotency-Keys, same
+   opportunity) via real HTTP threads produce exactly one `SkillStateTransitionRecord`; five
+   concurrent hint requests never escalate past L3 (the same opportunity-row `FOR UPDATE` lock
+   BE4c's attempt path uses serializes them) — successes' levels are exactly `1..n`, n<=3, excess
+   requests fail closed (409).
+3. **DB/technical failure before AND after the BKT/mastery calculation**: a service subclass
+   raising `SQLAlchemyError` as the first statement of `_apply_first_attempt_bkt` (BEFORE any
+   `predict`/`posterior`/`update` call — BE4c's own test only covers AFTER, at commit) proves the
+   attempt-record flush that precedes it also rolls back (zero `AttemptRecord`, zero
+   `SkillStateTransitionRecord`); a `commit()`-raising unit-of-work (AFTER the BKT calc, mirroring
+   BE4c's own pattern) proves the same at the later boundary. Both surface as `TECHNICAL_FAILURE`
+   (503), never a learner-facing incorrect-attempt outcome, and neither alters
+   `LearnerSkillStateRecord.observation_count`.
+4. **Network retry + idempotent replay** across every BE4 command route in one flow (start,
+   attempt, hint, complete) — replays return byte-identical canonical responses and create no
+   second write, with one documented exception: a hint request that legitimately fails closed
+   (no catalogue content for the selected template) is never persisted to
+   `b_idempotency_records` (only a *successful* hint reserves+finishes that record), so replaying
+   it re-executes the same fail-closed path with a fresh `request_id` rather than replaying a
+   stored canonical response — there is no second side effect either way, so this is intended
+   behavior, not a gap.
+5. **Server/client clock disagreement**: a genuinely server-side-expired opportunity still times
+   out even when the client claims `client_elapsed_ms=0`; a fresh opportunity submitted with the
+   client claiming the maximum allowed elapsed time (3,600,000 ms) is still judged correct/incorrect
+   from `submitted_value` alone — `client_elapsed_ms` never enters the correctness or timeout
+   decision, only server timestamps and the server-persisted deadline do.
+6. **Grade eligibility + deferred-template exclusion sustained across a whole session**: a
+   Grade-2 learner is driven through all 5 opportunities of a session end-to-end; every
+   `(skill_id, item_template_id)` pair persisted for the session is asserted to never be
+   `multiplication`/`division` and never the deferred-calibration-pending template id.
+7. **Technical failure never recorded as learner failure or a BKT observation**: reuses the
+   before-BKT-calc failure injection and asserts the opportunity's learner-skill-state row is
+   either absent or has `observation_count == 0` afterward.
+8. **Public payload + structured-log field scan across every BE4 route**: select/hint/attempt/
+   complete/summary response bodies are recursively scanned against a forbidden-key set (answers,
+   accepted-answer sets, distractor internals, generation seed/guards, catalogue version/checksum
+   outside the hint route's own governed reconstruction key, selection provenance, sequencing
+   score internals, raw BKT/mastery/theta_B) with none found; `caplog`-captured structured JSON log
+   records from the same session (via `app.core.logging.JsonFormatter`'s fixed whitelisted field
+   set) are scanned the same way — none found. `test_be4f_transactional_sweep.py`: 10 passed.
+
+**Errors encountered and fixed (all caught by the real Docker+Postgres run):**
+1. `/api/v1/learner/profile` creates a learner with `grade=None` (grade is only ever assigned via
+   classroom-membership approval); every opportunity-selection call fails closed
+   (`ConflictError`/409) without a grade. Fixed by directly setting `Learner.grade` after profile
+   creation in this file's `setup_learner` helper, the same way `test_be4b_adaptive_selection.py`
+   seeds grade directly rather than routing through classroom membership.
+2. The server timeout deadline is fixed at opportunity-OPEN time
+   (`opportunity_selection.open_adaptive_opportunity` reads `DEFAULT_TIMEOUT` once, when the
+   opportunity row is created) — an early version of both the full-session-flow and the
+   clock-disagreement test patched `DEFAULT_TIMEOUT` to zero only *after* the opportunity had
+   already been opened with the original 5-minute value, so the "genuinely expired" scenario
+   spuriously returned `RESPONSE` instead of `TIMEOUT`. Fixed by moving the monkeypatch to wrap
+   the opening call itself.
+3. An initial version of the hint step in the full-session-flow and network-retry tests assumed
+   any selected opportunity's template carries catalogue hint content; real adaptive selection is
+   not hand-pinned to a template in this integrated flow (unlike BE4d's dedicated, pinned-template
+   hint tests), and only 29/36 fixture templates do. Fixed by asserting either outcome (success or
+   fail-closed 409) and, for the replay comparison specifically, only requiring byte-identical
+   replay when the first call actually succeeded (see point 4 above for why a failed lookup's
+   replay legitimately differs only in `request_id`).
+4. The parity test's first draft called `.model_dump(mode="json")` on the adapter's `TaskInstance`
+   return value, which is a frozen `dataclasses.dataclass`, not a Pydantic model — fixed with
+   `dataclasses.asdict`. The first full-field comparison against the vendored package's raw
+   `GeneratedItemInstance.model_dump(mode="json")` also failed for one pair because that raw dump
+   carries extra internal-only fields the adapter's narrower port type never exposes; fixed by
+   scoping the comparison to exactly the fields the adapter payload contains (see "Parity" above).
+
+**Exit Gate assertion.** The end-to-end Component B learner scenario above passes transaction,
+concurrency, replay, timeout, privacy, and recovery in one integrated session; each genuine first
+attempt produced exactly one atomic mastery transition (4 transitions for 4 first-attempt RESPONSE
+events across the swept session, zero for the TIMEOUT opportunity, zero for retries, zero for
+hints); no technical failure (before or after the BKT calc) altered `observation_count` or left a
+partial `AttemptRecord`/`SkillStateTransitionRecord`.
+
+**No production gap found.** This batch is verification-only, as directed; no `app/` code changed
+(confirmed by `git status` below).
+
+**Verification (Python 3.11.15, real Postgres 16 — a fresh, ad hoc Docker network + `postgres:16-
+alpine` container + `python:3.11.15-slim-bookworm` image built from the existing `Dockerfile`, since
+no compose file exists yet, matching BE4e's own ad hoc verification setup):**
+- `test_be4f_parity.py`: **3 passed** (not skipped — `component_b_generator` importable, ran
+  against the real vendored wheel).
+- `test_be4f_transactional_sweep.py`: **10 passed** (not skipped).
+- `test_be3_live_engine_boundary.py`: **24 passed, 0 skipped** (13 prohibited modules stay
+  unreachable; the adapter is still the sole `app/` importer).
+- `alembic upgrade head` → `20260728_0003` (BE4e's head, unchanged); no migration added by this
+  batch.
+- **Full suite: 232 passed, 0 failed, 0 skipped**, run in 225.27s.
+- `git status`: only `Dev/backend/tests/test_be4f_parity.py` and
+  `Dev/backend/tests/test_be4f_transactional_sweep.py` (both untracked) — no other file touched.
+
+This batch does NOT claim `BE4_LIVE_LEARNING_FLOW_BATCH_CLOSED` — a separate review decides that
+(the overall BE4 Exit-Gate identifier). Left uncommitted for Yasindu.
+
+## 2026-07-28 — BE5a: freeze & version the frontend contract (BEplan §10 steps 1-4, 8, 10)
+
+Engineering-only, contract-shape batch — no route behavior change, no new endpoint, no scientific
+logic touched. Froze the live `app.openapi()` and generated/checked TypeScript types from it on
+the frontend side, adding drift tests on both sides against one shared artefact.
+
+**Frozen artefact.** `backend/contract/openapi.v1.json` (2,622 lines, produced by
+`app.openapi()` under the project's own `python:3.11.15-slim-bookworm` Docker image — the local
+host has no 3.11/3.12 interpreter, same constraint as every prior batch) plus
+`backend/contract/openapi.v1.meta.json` (`contract_version: "v1"`,
+`checksum_sha256: 910fde8ef0d2ff7d09fc0edcf8479811d599691db0fba764e1df7d85375d44fc`). Its route
+set (25 distinct paths / 28 operations) matches `test_be2_architecture_guards.py::EXPECTED_ROUTES`
+exactly (asserted as a set, not a hardcoded count).
+
+**No-private-field guarantee.** `test_be5a_contract_freeze.py::test_no_private_or_scientific_
+field_name_in_frozen_schema` scans every `components.schemas.*.properties` key (not description
+text — docstrings on several of these models legitimately discuss BKT/mastery/distractors as
+what is NOT exposed, so a naive substring scan over the whole JSON would false-positive) against
+the same forbidden-term set `test_be2_architecture_guards.py` uses at the DB-column layer
+(`mastery`, `bkt`, `answer`, `correct`, `distractor`, `seed`, `provenance`, and more). Zero
+offenders — independently confirms BE4's private/public DTO split holds at the API-schema layer.
+
+**Backend drift tests** (`test_be5a_contract_freeze.py`, 4 new tests): live `app.openapi()` ==
+frozen JSON; frozen file's own sha256 == the committed meta checksum; frozen route set ==
+`EXPECTED_ROUTES` == live route set; the no-private-field scan above.
+
+**Generated TypeScript types.** `frontend/scripts/generate-contract-types.mjs` — a small,
+dependency-free, deterministic OpenAPI-schema-to-TS-interface generator (no `openapi-typescript`
+install; handles `$ref`, `anyOf`, `const`, `enum`, and `additionalProperties` as they actually
+appear in this schema) — mechanically emits `frontend/src/api/generated/openapi-types.ts` (one
+`interface` per component schema, alphabetically ordered, plus a `CONTRACT_OPERATIONS`
+path/operation index). Committed output is verified non-stale by a frontend test that re-runs the
+generator in-memory and diffs it against the committed file.
+
+**Frontend reconciliation — real finding.** Comparing the frozen artefact against the existing
+handwritten `frontend/src/api/contracts.ts` surfaced that most of it predates the real backend:
+`/api/v1/me` returns only `AuthenticatedPrincipal{user_id, email}` (no `roles`/`learner`/
+`request_id`), and `POST /api/v1/b/sessions` takes no request body and returns
+`SessionCommandResponse{session_id, state, runtime_bundle_version, created_at_utc, row_version,
+request_id}` — not the `b_session_id`/`session_number`/`resume`/`current_opportunity_id`/
+`expires_at` shape `contracts.ts`'s `MeResponse`/`StartSessionResponse` assume. Those two types
+are consumed throughout `auth-context.tsx`'s authorization gating and
+`session-preparation-screen.tsx`'s whole phase/navigation state machine — both currently exercised
+only via the `EXPO_PUBLIC_COMPONENT_B_DEV_FIXTURE` path, never against the live backend. Aligning
+them to reality is BE5 step 5 (wiring the session-prep/identity flow to real APIs), explicitly
+excluded from this BE5a batch (steps 1-4, 8, 10 only) — confirmed with the project director before
+proceeding. Left `MeResponse`/`StartSessionRequest`/`StartSessionResponse`/
+`PendingStartSessionCommand` unchanged, with an explicit code comment on each documenting the real
+shape and pointing at `openapi-types.ts`, so the gap is visible rather than silently papered over.
+Similarly, the real runtime error envelope (`app/core/errors.py` `ErrorResponse`/`ErrorBody`:
+schema_version plus a nested error object with code/message/request_id/details) is invisible to
+`app.openapi()` — FastAPI does not auto-register custom-exception-handler responses in the
+generated schema — so `ApiErrorEnvelope` (flat, with an unused `retryable` field) has no frozen
+artefact to reconcile against yet; left unchanged with the same kind of comment, and flagged as a
+follow-up (adding explicit `responses=` schema annotations to every route) rather than attempted
+here.
+
+**What WAS safely reconciled** (present in the frozen artefact, no screen/business-logic consumer
+to break): `HealthReadyResponse` in `contracts.ts` is now derived directly from the generated
+`ReadinessResponse` type instead of a hand-guessed partial shape; `isHealthReadyResponse` in
+`runtime-validation.ts` now requires `stage: "infrastructure"` and a `checks` string-map object
+(previously accepted partial/incorrect shapes) — strictly more fail-closed, never weaker.
+`component-b-api.ts`'s dev fixture literal for `checkReadiness()` was updated to match (adds
+`stage`/`checks`) — no behavior change, just keeps the fixture type-correct.
+
+**Frontend contract-check tests** (step 10) — `frontend/src/api/__tests__/contract-freeze.test.ts`,
+run via Node's built-in test runner (`node --import tsx --test`, `npm run test:contract`; added
+`tsx` as a devDependency since the app's own TypeScript uses constructor parameter properties,
+which Node's native type-stripping can't erase on its own):
+1. sha256 of the frontend's own read of `backend/contract/openapi.v1.json` matches
+   `openapi.v1.meta.json` (both sides checking the same artefact, not independently-trusted
+   copies).
+2. Re-running the generator in-memory produces byte-identical output to the committed
+   `openapi-types.ts` (no stale generated file).
+3. `isHealthReadyResponse` accepts a schema-derived valid `ReadinessResponse` sample and, for each
+   of the schema's required fields independently, rejects a sample with that field dropped
+   (fail-closed proven per-field, not just on the happy path).
+4. `getComponentBDevelopmentFixture()` returns null under `EXPO_PUBLIC_APP_ENV` set to staging,
+   production, or unset, even with `EXPO_PUBLIC_COMPONENT_B_DEV_FIXTURE` set, and only returns the
+   fixture name under development (BEplan step 8 — dev-fixture gating, asserted not assumed; the
+   guard already existed in `component-b-api.ts`, this batch adds the test).
+
+**Verification.**
+- Backend, Python 3.11.15 + real Postgres 16 (fresh Docker network + `postgres:16-alpine` + the
+  project's own `Dockerfile`, now also copying `contract/` into the image so the drift test can
+  read it in-container): `alembic upgrade head` stayed at unchanged `20260728_0003`; full suite
+  **236 passed, 0 failed, 0 skipped** in 189.94s (up from 232 — the 4 new BE5a tests), including
+  `test_be3_live_engine_boundary.py` and `test_be4f_parity.py` running for real (not skipped).
+- Frontend: `npx tsc --noEmit` clean; `npm run test:contract` — 4/4 passed.
+- `git status`: `backend/Dockerfile` (contract COPY line), `backend/contract/` (new, frozen
+  artefact + meta), `backend/tests/test_be5a_contract_freeze.py` (new);
+  `frontend/src/api/contracts.ts`, `frontend/src/api/runtime-validation.ts`,
+  `frontend/src/api/component-b-api.ts` (reconciliation + comments),
+  `frontend/src/api/generated/` (new, generated types),
+  `frontend/scripts/generate-contract-types.mjs` (new, the generator),
+  `frontend/src/api/__tests__/` (new, contract-freeze tests),
+  `frontend/package.json` and `package-lock.json` (`tsx` devDependency + two new scripts). No
+  other file touched; no `app/` route behavior changed.
+
+This batch does NOT claim `BE5A_CONTRACT_FREEZE_BATCH_CLOSED` — a separate review decides that.
+Left uncommitted for Yasindu.

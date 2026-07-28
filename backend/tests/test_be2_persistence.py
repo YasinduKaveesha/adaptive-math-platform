@@ -39,6 +39,16 @@ EXPECTED_TABLES = {
     "b_sessions", "b_session_events", "b_idempotency_records", "b_audit_events",
     "teacher_profiles", "classrooms", "classroom_invites", "classroom_memberships",
     "teacher_profiles", "classrooms", "classroom_invites", "classroom_memberships",
+    # BE4a (BEplan §9 BE4.1) — private opportunity/task-instance/presentation-token tables.
+    "b_item_opportunities", "b_task_instances", "b_presentation_tokens",
+    # BE4b (BEplan §9 BE4.2) — private per-learner, per-skill BKT state.
+    "b_learner_skill_states",
+    # BE4c (BEplan §9 BE4.3 + BE4.4) — private attempt events + immutable BKT transitions.
+    "b_attempts", "b_skill_state_transitions",
+    # BE4d (BEplan §9 BE4.5) — private governed hint events, separate from attempts/transitions.
+    "b_hint_events",
+    # BE4e (BEplan §9 BE4.6) — private, immutable session-aggregate + skill-certification results.
+    "b_session_aggregate_results", "b_skill_certification_results",
 }
 COMMON_COLUMNS = {
     "created_at_utc", "updated_at_utc", "actor_user_id", "system_actor", "request_id",

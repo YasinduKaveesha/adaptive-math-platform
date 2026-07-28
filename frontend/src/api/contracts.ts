@@ -1,3 +1,14 @@
+import type { ReadinessResponse } from '@/src/api/generated/openapi-types';
+
+// BE5 step 5 (session-prep/identity wiring against the live API) has not run yet. The four
+// types below describe the fixture-only contract session-preparation-screen.tsx and
+// auth-context.tsx currently build against; they are NOT yet matched by the live, frozen
+// backend contract (backend/contract/openapi.v1.json). The real shapes today are
+// `AuthenticatedPrincipal` (just `user_id`/`email`, no `roles`/`learner`/`request_id`) and
+// `SessionCommandResponse` (`session_id`/`state`/`runtime_bundle_version`/`created_at_utc`/
+// `row_version`, no request body, no `b_session_id`/`resume`/`expires_at`) — see
+// src/api/generated/openapi-types.ts. Reconciling these four types to the live shape is BE5
+// step 5 work, tracked separately so it can land together with the screen/flow rewrite it forces.
 export type MeResponse = {
   user_id: string;
   roles: ('learner' | 'supervisor' | 'operator')[];
@@ -12,6 +23,12 @@ export type MeResponse = {
 
 export type ApiFieldIssue = { field: string; code: string };
 
+// The live error envelope is `{ schema_version, error: { code, message, request_id, details } }`
+// (app/core/errors.py ErrorResponse/ErrorBody) — nested, and without a `retryable` field.
+// FastAPI does not auto-register custom-exception-handler responses in the generated OpenAPI, so
+// that true shape has no component schema to freeze/reconcile against yet (BEplan §10 step 10
+// needs a shared frozen artefact for both sides to check against). Tracked as a follow-up to add
+// explicit `responses=` schema annotations on every route; left unchanged for this batch.
 export type ApiErrorEnvelope = {
   code: string;
   message: string;
@@ -29,10 +46,8 @@ export type SessionState =
   | 'expired'
   | 'technical_failed';
 
-export type HealthReadyResponse = {
-  status: 'ready';
-  request_id?: string;
-};
+// Matches the live `/health/ready` contract exactly (generated from the frozen OpenAPI).
+export type HealthReadyResponse = ReadinessResponse;
 
 export type StartSessionRequest = {
   client_timezone: string;

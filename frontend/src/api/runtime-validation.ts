@@ -70,10 +70,17 @@ const sessionStates = new Set([
 ]);
 
 export function isHealthReadyResponse(value: unknown): value is HealthReadyResponse {
+  const checksAreValid =
+    isRecord(value) &&
+    isRecord(value.checks) &&
+    Object.values(value.checks).every((entry) => typeof entry === 'string');
+
   return (
     isRecord(value) &&
     value.status === 'ready' &&
-    (value.request_id === undefined || isNonEmptyString(value.request_id))
+    value.stage === 'infrastructure' &&
+    isNonEmptyString(value.request_id) &&
+    checksAreValid
   );
 }
 

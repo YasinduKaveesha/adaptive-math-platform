@@ -38,6 +38,7 @@ PROHIBITED_MODULES = (
     "component_b_generator.audits.fidelity",
     "component_b_generator.audits.leakage",
     "component_b_generator.audits.population_neutrality",
+    "component_b_generator.generation.item_opportunities",
 )
 
 
@@ -101,9 +102,15 @@ def test_no_dataset_generation_or_experiment_runner_entry_point_in_package() -> 
                 assert "cohort" not in " ".join(names), (path, names)
 
 
-def test_app_import_graph_still_does_not_reach_prohibited_modules() -> None:
-    """This batch does not wire any application adapter, so app/ must not import the new
-    package (or any Yass research root) at all — unchanged from the BE2 guard."""
+def test_only_the_live_engine_adapter_module_imports_the_package() -> None:
+    """BE3b wires the adapter, so ``component_b_generator`` (and the standalone
+    ``upadya_component_b_live_engine`` name, ``yass``, or a bare-root ``pipeline``/``pilot``
+    import) may now legitimately appear under ``app/`` — but ONLY in
+    ``app/infrastructure/live_engine/adapter.py``, the one reviewed binding point. Every other
+    file in the app import graph must still be completely disjoint from these roots. This
+    replaces the BE3a version of this guard, whose docstring said "this batch does not wire
+    any application adapter" — BE3b is that next batch.
+    """
     prohibited_import_roots = {
         "component_b_generator",
         "upadya_component_b_live_engine",
@@ -115,6 +122,7 @@ def test_app_import_graph_still_does_not_reach_prohibited_modules() -> None:
         "pipeline",
         "pilot",
     }
+    allowed_adapter_path = Path("app/infrastructure/live_engine/adapter.py")
     for path in Path("app").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -124,7 +132,29 @@ def test_app_import_graph_still_does_not_reach_prohibited_modules() -> None:
                 imported = {node.module.split(".")[0].lower()}
             else:
                 continue
+            if path == allowed_adapter_path:
+                assert imported.isdisjoint({"yass", "pipeline", "pilot"}), (path, imported)
+                continue
             assert imported.isdisjoint(prohibited_import_roots), (path, imported)
+
+
+def test_app_import_graph_never_reaches_the_thirteen_prohibited_submodules() -> None:
+    """Regardless of the top-level package now being a legitimate dependency of the adapter,
+    every one of the 13 explicitly-prohibited submodules (cohort/*, the synthetic
+    ``behaviour.*`` generators, ``pipeline``, ``pilot``, ``runner``, ``audits`` + its
+    submodules, and ``generation.item_opportunities``) must stay unreachable from the entire
+    ``app/`` import graph — including from the adapter itself."""
+    for path in Path("app").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                full_module = node.module
+            elif isinstance(node, ast.Import):
+                full_module = ";".join(alias.name for alias in node.names)
+            else:
+                continue
+            for prohibited in PROHIBITED_MODULES:
+                assert prohibited not in full_module, (path, full_module, prohibited)
 
 
 def test_bkt_update_is_deterministic_under_fixed_provenance() -> None:

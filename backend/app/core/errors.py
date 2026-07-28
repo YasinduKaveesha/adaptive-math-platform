@@ -64,6 +64,15 @@ class ConflictError(ApplicationError):
     message = "The request conflicts with the current resource state."
 
 
+class TechnicalFailureError(ApplicationError):
+    """A network/database/API failure while handling the request. Never a learner-facing
+    correctness/BKT outcome — see ``app.application.attempt_submission``."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "TECHNICAL_FAILURE"
+    message = "A technical failure occurred; please retry."
+
+
 def error_response(
     request: Request,
     *,

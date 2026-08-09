@@ -56,6 +56,11 @@ compose*.yml
 !provenance/wheels/
 provenance/wheels/*
 !provenance/wheels/upadya_component_b_live_engine-0.1.0+be3.0e86fdc-py3-none-any.whl
+# BF-4: re-pinned wheel. The BE3 line above is kept, not replaced — it is what lets the old,
+# still-retained wheel be rebuilt into an image for historical verification if anyone ever needs
+# to reproduce the BE3-era manifest entry; it is never installed today (nothing in
+# requirements.lock references it) so keeping it in the build context is inert.
+!provenance/wheels/upadya_component_b_live_engine-0.1.0+bf4.09267ab-py3-none-any.whl
 !provenance/runtime-bundle.schema.json
 # BE3c exception: the implemented/deferred template partition provenance is read by the
 # characterization test suite to cross-check the TEST-FIXTURE-ONLY catalogue against the

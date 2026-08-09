@@ -28,6 +28,10 @@ from component_b_generator.answers.rules import (
     answers_equivalent as _pkg_answers_equivalent,
     normalize_answer as _pkg_normalize_answer,
 )
+from component_b_generator.answers.structured import (
+    StructuredParseError as _PkgStructuredParseError,
+    structured_forms_equivalent as _pkg_structured_forms_equivalent,
+)
 from component_b_generator.bkt.certification import certify_skill as _pkg_certify_skill
 from component_b_generator.bkt.config import BBKTConfig as _PkgBBKTConfig, SkillBKTParams as _PkgSkillBKTParams
 from component_b_generator.bkt.guess_guard import (
@@ -426,6 +430,27 @@ class LiveEngineAdapter:
 
     def answers_equivalent(self, a: object, b: object) -> bool:
         return _pkg_answers_equivalent(a, b)
+
+    def structured_forms_equivalent(self, a: object, b: object) -> bool:
+        """Tolerant place-value comparison, routed through the reviewed package parser (BE-C2 B).
+
+        Wraps ``component_b_generator.answers.structured.structured_forms_equivalent``, which parses
+        both sides with ``parse_place_value_expression`` — hand-written, deterministic, no ``eval``,
+        only the two approved grammars — and compares the resulting integers. Nothing is
+        reimplemented here; this exists so the call is routed like every other scientific call.
+
+        Returns ``False`` rather than raising when either side is not one of the approved forms: a
+        child typing something unparseable is a wrong answer, not a server error. Callers must still
+        scope *when* to use this — see ``attempt_submission``; applying it to an arithmetic template
+        would start accepting ``10+2`` as an answer to a question whose answer is ``12``, i.e.
+        accepting a restatement of the problem.
+        """
+        if not isinstance(a, str) or not isinstance(b, str):
+            return False
+        try:
+            return _pkg_structured_forms_equivalent(a, b)
+        except _PkgStructuredParseError:
+            return False
 
     def correct_answer_raw(self, item_template_id: str, operands: Mapping[str, object]) -> object:
         try:

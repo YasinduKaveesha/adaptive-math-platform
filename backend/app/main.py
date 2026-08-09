@@ -55,7 +55,17 @@ def create_app() -> FastAPI:
         allow_origins=list(settings.cors_allowed_origins),
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-Request-ID",
+            "Idempotency-Key",
+            # Sent on every request by frontend/src/api/client.ts, including from the Expo web
+            # target — not mobile-only despite the header name. Web is the only platform whose
+            # browser enforces CORS, so this was invisible on native and blocked every
+            # state-changing request (sign-up, save name, join code, ...) on web only.
+            "X-Mobile-App-Version",
+        ],
     )
 
     @application.middleware("http")

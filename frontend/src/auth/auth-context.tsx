@@ -11,12 +11,12 @@ import {
 } from 'react';
 
 import { getAuthorizedLearner } from '@/src/api/client';
-import type { MeResponse } from '@/src/api/contracts';
+import type { AuthorizedLearner } from '@/src/api/contracts';
 import { ApiClientError } from '@/src/api/errors';
 import { getSupabaseClient } from '@/src/auth/supabase';
 import { readPublicConfig, type PublicConfig } from '@/src/config/env';
 
-export type Gender = 'female' | 'male' | 'non_binary' | 'prefer_not_to_say';
+export type Gender = 'female' | 'male';
 
 export type RegistrationInput = {
   displayName: string;
@@ -40,7 +40,7 @@ type AuthActionResult =
   | { ok: false; message: string };
 
 type AuthContextValue = {
-  me: MeResponse | null;
+  me: AuthorizedLearner | null;
   notice: string | null;
   profileName: string | null;
   status: AuthStatus;
@@ -72,16 +72,45 @@ function safeNotice(error: unknown) {
   return 'Something went wrong while signing in. Please try again.';
 }
 
-function isCredentialError(message: string) {
-  const normalized = message.toLowerCase();
-  return normalized.includes('invalid login') || normalized.includes('invalid credentials');
+// Supabase Auth returns a stable `code` field (see @supabase/auth-js's AuthError, and
+// fetch.js reading the API's own `error_code`) alongside the human-readable `message` —
+// matching on `code` is exact and is used for both the sign-in and sign-up paths below.
+// Deliberately not more specific than "invalid_credentials" on sign-in: telling the user
+// which of email/password was wrong would let an attacker enumerate registered emails.
+function signInErrorMessage(code: string | undefined): string {
+  if (code === 'invalid_credentials') {
+    return 'That email or password is not right. Please re-enter your password and try again.';
+  }
+  if (code === 'over_request_rate_limit') {
+    return 'Too many attempts. Please wait a moment and try again.';
+  }
+  if (code === 'email_not_confirmed') {
+    return 'Please confirm your email address before signing in.';
+  }
+  return 'The sign-in service could not complete the request. Please try again.';
+}
+
+function signUpErrorMessage(code: string | undefined): string {
+  if (code === 'user_already_exists') {
+    return 'An account with this email already exists. Try signing in instead.';
+  }
+  if (code === 'weak_password') {
+    return 'That password is too weak. Please choose a stronger one.';
+  }
+  if (code === 'over_email_send_rate_limit' || code === 'over_request_rate_limit') {
+    return 'Too many attempts. Please wait a moment and try again.';
+  }
+  if (code === 'email_address_invalid') {
+    return 'That email address is not valid.';
+  }
+  return 'We could not create the account. Check the details and try again.';
 }
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const configResult = useMemo(() => readPublicConfig(), []);
   const config = configResult.config;
   const [status, setStatus] = useState<AuthStatus>('checking');
-  const [me, setMe] = useState<MeResponse | null>(null);
+  const [me, setMe] = useState<AuthorizedLearner | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [profileName, setProfileName] = useState<string | null>(null);
   const operationRef = useRef(0);
@@ -114,23 +143,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
         if (operation !== operationRef.current) return;
 
-        if (!authorizedUser.learner) {
+        const membershipApproved = authorizedUser.classroomMembership?.state === 'APPROVED';
+        if (!authorizedUser.learnerProfile || !membershipApproved) {
           setMe(authorizedUser);
           setStatus('onboarding');
           return;
         }
 
-        if (!authorizedUser.roles.includes('learner') || !authorizedUser.learner.active) {
-          setMe(null);
-          setStatus('access-denied');
-          setNotice(
-            'This account does not have active learner access. Please ask a supervisor for help.',
-          );
-          return;
-        }
-
         setMe(authorizedUser);
-        setProfileName(authorizedUser.learner.display_name?.trim() || readDisplayName(session));
+        setProfileName(authorizedUser.learnerProfile.name.trim() || readDisplayName(session));
         setStatus('authorized');
       } catch (error) {
         if (operation !== operationRef.current) return;
@@ -233,10 +254,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setStatus('signed-out');
           return {
             ok: false,
-            message:
-              error && isCredentialError(error.message)
-                ? 'We could not sign you in. Check the email and password.'
-                : 'The sign-in service could not complete the request. Please try again.',
+            message: signInErrorMessage(error?.code),
           };
         }
 
@@ -272,7 +290,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setStatus('signed-out');
           return {
             ok: false,
-            message: 'We could not create the account. Check the details and try again.',
+            message: signUpErrorMessage(error?.code),
           };
         }
 

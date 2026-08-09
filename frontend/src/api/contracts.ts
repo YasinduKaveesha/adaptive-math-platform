@@ -1,74 +1,108 @@
-import type { ReadinessResponse } from '@/src/api/generated/openapi-types';
+import type {
+  AuthenticatedPrincipal,
+  InviteResolveResponse,
+  InviteTokenRequest,
+  LearnerMembershipListItem,
+  LearnerMembershipListResponse,
+  LearnerProfileResponse,
+  MembershipRequestResponse,
+  ProfileCreateRequest,
+  ReadinessResponse,
+  SessionCommandResponse,
+} from '@/src/api/generated/openapi-types';
 
-// BE5 step 5 (session-prep/identity wiring against the live API) has not run yet. The four
-// types below describe the fixture-only contract session-preparation-screen.tsx and
-// auth-context.tsx currently build against; they are NOT yet matched by the live, frozen
-// backend contract (backend/contract/openapi.v1.json). The real shapes today are
-// `AuthenticatedPrincipal` (just `user_id`/`email`, no `roles`/`learner`/`request_id`) and
-// `SessionCommandResponse` (`session_id`/`state`/`runtime_bundle_version`/`created_at_utc`/
-// `row_version`, no request body, no `b_session_id`/`resume`/`expires_at`) — see
-// src/api/generated/openapi-types.ts. Reconciling these four types to the live shape is BE5
-// step 5 work, tracked separately so it can land together with the screen/flow rewrite it forces.
-export type MeResponse = {
-  user_id: string;
-  roles: ('learner' | 'supervisor' | 'operator')[];
-  learner: {
-    learner_id: string;
-    grade: 2 | 3;
-    active: boolean;
-    display_name?: string;
-  } | null;
-  request_id: string;
+export type {
+  AuthenticatedPrincipal,
+  InviteResolveResponse,
+  InviteTokenRequest,
+  LearnerMembershipListItem,
+  LearnerMembershipListResponse,
+  LearnerProfileResponse,
+  MembershipRequestResponse,
+  ProfileCreateRequest,
+  SessionCommandResponse,
 };
 
-export type ApiFieldIssue = { field: string; code: string };
+// GET /api/v1/me returns only the bare principal. Role/profile resolution is a separate call
+// (GET /api/v1/learner/profile); this app is child-facing only, so a null learnerProfile means
+// "no learner profile yet" (onboarding), never a teacher/operator role check. classroomMembership
+// is the most relevant membership (see pickMembership) from GET /api/v1/learner/classrooms; null
+// means no membership has been requested yet. 'authorized' status requires both a profile and an
+// APPROVED membership — see auth-context.tsx's authorizeSession.
+export type AuthorizedLearner = {
+  principal: AuthenticatedPrincipal;
+  learnerProfile: LearnerProfileResponse | null;
+  classroomMembership: LearnerMembershipListItem | null;
+};
 
-// The live error envelope is `{ schema_version, error: { code, message, request_id, details } }`
-// (app/core/errors.py ErrorResponse/ErrorBody) — nested, and without a `retryable` field.
-// FastAPI does not auto-register custom-exception-handler responses in the generated OpenAPI, so
-// that true shape has no component schema to freeze/reconcile against yet (BEplan §10 step 10
-// needs a shared frozen artefact for both sides to check against). Tracked as a follow-up to add
-// explicit `responses=` schema annotations on every route; left unchanged for this batch.
+// Mirrors app/core/errors.py ErrorResponse/ErrorBody exactly, verified against the live
+// handlers. `details` is `dict | list[dict] | None` server-side and is emitted with
+// exclude_none=True, so it is ABSENT (never null) when unset. Its inner shape is
+// per-handler and deliberately not narrowed here: the 422 handler emits
+// [{location: string[], type: string}], other handlers pass through arbitrary dicts.
+// Still absent from the frozen OpenAPI (FastAPI does not register custom exception-handler
+// responses), so this is hand-written against observed behaviour — see Risk 3.
 export type ApiErrorEnvelope = {
-  code: string;
-  message: string;
-  request_id: string;
-  retryable: boolean;
-  details?: ApiFieldIssue[];
+  schema_version: string;
+  error: {
+    code: string;
+    message: string;
+    request_id: string;
+    details?: Record<string, unknown> | Record<string, unknown>[];
+  };
 };
-
-export type SessionState =
-  | 'starting'
-  | 'active'
-  | 'completing'
-  | 'completed'
-  | 'abandoned'
-  | 'expired'
-  | 'technical_failed';
 
 // Matches the live `/health/ready` contract exactly (generated from the frozen OpenAPI).
 export type HealthReadyResponse = ReadinessResponse;
 
-export type StartSessionRequest = {
-  client_timezone: string;
-  mobile_app_version: string;
-};
-
-export type StartSessionResponse = {
-  b_session_id: string;
-  session_number: number;
-  state: SessionState;
-  resume: boolean;
-  current_opportunity_id: string | null;
-  runtime_bundle_version: string;
-  expires_at: string;
-  request_id: string;
-};
-
-export type PendingStartSessionCommand = {
+// Local offline-recovery persistence for in-flight B-session write commands, not a server DTO.
+// Every variant carries its own `idempotencyKey`/`createdAt`; the backend fingerprints the
+// request body into the idempotency record (see body_fingerprint at
+// app/application/b_session_lifecycle.py:175 and app/application/attempt_submission.py:194), so a
+// replay must resend the exact body it saved, never one reconstructed at replay time. This is why
+// submit_response's `body` is required, not optional, and why `client_elapsed_ms` (unrecoverable
+// after a relaunch) is persisted rather than recomputed.
+export type PendingStartSessionCommandBase = {
   kind: 'start_session';
   endpoint: '/api/v1/b/sessions';
   idempotencyKey: string;
-  body: StartSessionRequest;
   createdAt: string;
 };
+
+export type PendingSubmitResponseCommand = {
+  kind: 'submit_response';
+  endpoint: '/api/v1/b/sessions/{sessionId}/opportunities/{itemOpportunityId}/responses';
+  sessionId: string;
+  itemOpportunityId: string;
+  body: { submitted_value: string; client_elapsed_ms: number };
+  idempotencyKey: string;
+  createdAt: string;
+};
+
+export type PendingRequestAssistCommand = {
+  kind: 'request_assist';
+  endpoint: '/api/v1/b/sessions/{sessionId}/opportunities/{itemOpportunityId}/assists';
+  sessionId: string;
+  itemOpportunityId: string;
+  idempotencyKey: string;
+  createdAt: string;
+};
+
+export type PendingCompleteOpportunityCommand = {
+  kind: 'complete_opportunity';
+  endpoint: '/api/v1/b/sessions/{sessionId}/opportunities/{itemOpportunityId}/complete';
+  sessionId: string;
+  itemOpportunityId: string;
+  idempotencyKey: string;
+  createdAt: string;
+};
+
+export type PendingSessionCommand =
+  | PendingStartSessionCommandBase
+  | PendingSubmitResponseCommand
+  | PendingRequestAssistCommand
+  | PendingCompleteOpportunityCommand;
+
+// Kept as an alias of the start_session member so existing start-session call sites
+// (session-preparation-screen.tsx) keep compiling untouched.
+export type PendingStartSessionCommand = PendingStartSessionCommandBase;

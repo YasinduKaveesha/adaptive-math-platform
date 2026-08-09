@@ -33,6 +33,9 @@ from app.domain.b_opportunity import (
     PresentationTokenMismatchError,
     PresentationTokenNotFoundError,
 )
+# Domain-layer, pure-stdlib module: importing it does not pull in ``component_b_generator``, so the
+# "this module never imports the package" note above and the boundary guard both still hold.
+from app.domain.live_engine.presentation import derive_presented_choices
 from app.infrastructure.persistence_models import (
     ItemOpportunityRecord,
     PresentationTokenRecord,
@@ -49,10 +52,15 @@ PRESENTATION_TOKEN_ENTROPY_BYTES = 32
 
 
 def _safe_presented_choices(correct_answer: str, distractor_candidates: Sequence[str]) -> list[str]:
-    """Mirrors ``project_to_public``'s presented-choices derivation exactly (BE3c)."""
-    if not distractor_candidates:
-        return []
-    return sorted({correct_answer, *distractor_candidates})
+    """Delegates to the one shared derivation rather than restating it (BE-C2 Part A).
+
+    This used to be an independent copy whose docstring claimed it "mirrors ``project_to_public``'s
+    presented-choices derivation exactly (BE3c)" — a claim nothing enforced, so the numeric-ordering
+    fix would have had to be made twice and could silently have been made only once. It now calls
+    ``derive_presented_choices``; the two derivations are the same code by construction, and
+    ``tests/test_bec2_presented_choice_ordering.py`` asserts it.
+    """
+    return list(derive_presented_choices(correct_answer, distractor_candidates))
 
 
 def _hash_token(raw_token: str) -> str:

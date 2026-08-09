@@ -213,12 +213,27 @@ class TestHintTextAndChecksumProvenance:
         self, adapter: LiveEngineAdapter, catalogue, catalogue_checksum: str
     ) -> None:
         hint = adapter.get_hint(catalogue, catalogue_checksum, "B-ADD04-2D-NO-REGROUP", 1)
-        assert hint.content == "Add the ones first, then the tens."
+        # Verbatim from R26-IT-138 §11. Until the hint port, the fixture carried text written for
+        # the fixture itself ("Add the ones first, then the tens.") rather than the governed
+        # string, so this assertion was pinning unreviewed content.
+        assert hint.content == "Add ones with ones and tens with tens."
         assert hint.catalogue_checksum == catalogue_checksum
         assert hint.catalogue_version == catalogue.catalogue_version
 
-    def test_missing_hint_content_fails_closed_never_a_generated_fallback(
+    def test_absent_hint_content_fails_closed_never_a_generated_fallback(
         self, adapter: LiveEngineAdapter, catalogue, catalogue_checksum: str
     ) -> None:
+        """Fail-closed coverage for absent hint content.
+
+        NOTE: no catalogue template exercises the missing-content path any more. All 36 templates
+        now carry governed L1/L2/L3 text (the fixture previously had hints on only two), so
+        ``B-DIV03-DIVIDE-BY-2`` — which this test used to use — resolves successfully. Absence is
+        therefore constructed explicitly below rather than borrowed from a gap in the data. The
+        guarantee under test is unchanged and deliberately still covered: when content cannot be
+        produced, ``get_hint`` raises rather than synthesizing, paraphrasing or approximating
+        anything (``behaviour/hints.py`` documents both paths as fail-closed).
+        """
         with pytest.raises(HintUnavailableError):
-            adapter.get_hint(catalogue, catalogue_checksum, "B-DIV03-DIVIDE-BY-2", 1)
+            adapter.get_hint(catalogue, catalogue_checksum, "B-NOT-A-REAL-TEMPLATE", 1)
+        with pytest.raises(HintUnavailableError):
+            adapter.get_hint(catalogue, catalogue_checksum, "B-DIV03-DIVIDE-BY-2", 4)

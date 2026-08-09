@@ -40,6 +40,7 @@ from app.infrastructure.persistence_models import (
     ClassroomInvite,
     ClassroomMembership,
     IdempotencyRecord,
+    Learner,
     TeacherProfile,
 )
 from app.infrastructure.repositories import (
@@ -67,6 +68,19 @@ _JOIN_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 _JOIN_CODE_LENGTH = 8
 _JOIN_CODE_GROUP_SIZE = 4
 _JOIN_CODE_SEPARATOR_PATTERN = re.compile(r"[\s-]+")
+
+# Classroom roster grade -> learner roster grade, on membership APPROVAL only.
+#
+# `Classroom.grade` is String(16) constrained to GRADE_2|GRADE_3 (`ck_classrooms_grade`);
+# `Learner.grade` is a nullable SmallInteger constrained to NULL|2|3 (`ck_b_learners_grade`).
+# This is deliberately an explicit mapping rather than string slicing/parsing: if a third
+# classroom grade is ever added, this must fail loudly with a KeyError rather than silently
+# mis-map, because the learner grade selects which catalogue templates are eligible.
+#
+# Scope: this is ROSTER METADATA the teacher already chose when creating the classroom
+# (`Classroom.grade` is NOT NULL). It sets no mastery prior, no BKT parameter, no difficulty
+# ladder, no session bound, and no attempt limit.
+_CLASSROOM_GRADE_TO_LEARNER_GRADE = {"GRADE_2": 2, "GRADE_3": 3}
 
 
 def generate_classroom_join_code() -> str:
@@ -446,6 +460,17 @@ class ClassroomMembershipService:
             membership.decided_at_utc = now
             membership.decided_by_user_id = user.user_id
             membership.row_version += 1
+            # Approval is the single point at which a learner acquires a roster grade: the
+            # profile route creates the learner with grade NULL and nothing else ever writes it,
+            # so without this every downstream question request fails closed. Safe under the
+            # advisory xact lock and the membership `with_for_update()` taken above.
+            classroom = await uow.session.get(Classroom, membership.classroom_id)
+            if classroom is None:
+                raise ResourceNotFoundError()
+            learner = await uow.session.get(Learner, learner_id)
+            if learner is None:
+                raise ResourceNotFoundError()
+            learner.grade = _CLASSROOM_GRADE_TO_LEARNER_GRADE[classroom.grade]
             try:
                 await uow.session.flush()
             except IntegrityError as exc:

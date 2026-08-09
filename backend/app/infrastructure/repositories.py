@@ -265,6 +265,90 @@ class ItemOpportunityRepository(SqlAlchemyNeutralRepository[ItemOpportunityRecor
             .where(ItemOpportunityRecord.session_id == session_id, ItemOpportunityRecord.state == "CLOSED")
         )
 
+    async def sessions_since_practice(self, learner_id: UUID) -> dict[str, int]:
+        """BE-P2: per skill, how many of this learner's later sessions have started since the most
+        recent session in which that skill was practised.
+
+        This is the input ``sequencing.features.compute_features`` documents as "sessions since last
+        practice" and feeds ``spacing_due``. Only skills the learner has actually practised appear in
+        the result; a skill absent from the mapping is "never practised", which the feature function
+        maps to ``spacing_due = 1.0`` (maximally due).
+
+        SEMANTICS, stated because they are a reading rather than a specification: "sessions since"
+        counts DISTINCT sessions of this learner that were created strictly after the last session
+        containing an opportunity for the skill. The current session therefore contributes 0 to a
+        skill practised within it, which is what makes ``spacing_due`` drop immediately after
+        practice and recover as later sessions accumulate.
+        """
+        last_practised = (
+            select(
+                ItemOpportunityRecord.skill_id.label("skill_id"),
+                func.max(SessionRecord.created_at_utc).label("last_at"),
+            )
+            .join(SessionRecord, SessionRecord.session_id == ItemOpportunityRecord.session_id)
+            .where(ItemOpportunityRecord.learner_id == learner_id)
+            .group_by(ItemOpportunityRecord.skill_id)
+            .subquery()
+        )
+        later_sessions = (
+            select(func.count(func.distinct(SessionRecord.session_id)))
+            .where(
+                SessionRecord.learner_id == learner_id,
+                SessionRecord.created_at_utc > last_practised.c.last_at,
+            )
+            .scalar_subquery()
+        )
+        rows = await self.session.execute(
+            select(last_practised.c.skill_id, later_sessions.label("sessions_since"))
+        )
+        return {skill_id: int(sessions_since) for skill_id, sessions_since in rows}
+
+    async def prior_session_first_attempt_rts(
+        self, learner_id: UUID, current_session_id: UUID
+    ) -> dict[str, list[float]]:
+        """BF-1: per skill, the learner's first-attempt response times in **seconds** from
+        sessions strictly before the current one — the practice history the guess-guard's
+        plausibility floor must be computed from (mirrors the reference sequencing,
+        ``Yass/.../pipeline.py``'s floor-from-prior-sessions / median-from-this-session split).
+
+        Before this method existed, the floor and the current session's own median were computed
+        from the *same* current-session-only sample, which made the guard's ``TRIGGERED`` outcome
+        mathematically unreachable (the floor's quantile can never exceed the median's quantile on
+        one identical sample) — see ``session_completion.py``'s BF-1 docstring at the call site.
+
+        SEMANTICS, stated because they are a reading rather than a specification, mirroring
+        ``_build_opportunity_response``'s own within-session filter exactly so the prior-session
+        and current-session samples are computed the same way: only the **first** attempt
+        (``attempt_index == 1``) per opportunity counts — retries are never a first-attempt
+        observation, matching BKT's own first-attempt-only discipline — and only when that first
+        attempt was a real ``RESPONSE`` (never ``TIMEOUT``; a timeout has no valid response time)
+        with a strictly positive elapsed time. "Strictly before" is by session creation time,
+        matching ``sessions_since_practice``'s own convention above. A learner or skill with no
+        qualifying prior history is simply absent from the result — ``plausibility_floor`` already
+        treats that as insufficient evidence (``INSUFFICIENT_EVIDENCE``, never a fabricated floor).
+        """
+        current_session = await self.session.get(SessionRecord, current_session_id)
+        if current_session is None:
+            return {}
+
+        rows = await self.session.execute(
+            select(ItemOpportunityRecord.skill_id, AttemptRecord.client_elapsed_ms)
+            .join(AttemptRecord, AttemptRecord.item_opportunity_id == ItemOpportunityRecord.item_opportunity_id)
+            .join(SessionRecord, SessionRecord.session_id == ItemOpportunityRecord.session_id)
+            .where(
+                ItemOpportunityRecord.learner_id == learner_id,
+                SessionRecord.created_at_utc < current_session.created_at_utc,
+                AttemptRecord.attempt_index == 1,
+                AttemptRecord.event_kind == "RESPONSE",
+                AttemptRecord.client_elapsed_ms.isnot(None),
+                AttemptRecord.client_elapsed_ms > 0,
+            )
+        )
+        history: dict[str, list[float]] = {}
+        for skill_id, client_elapsed_ms in rows:
+            history.setdefault(skill_id, []).append(client_elapsed_ms / 1000.0)
+        return history
+
     async def list_for_session(self, session_id: UUID) -> list[ItemOpportunityRecord]:
         """BE4e (BEplan §9 BE4.6): every opportunity row for a session, ordered deterministically,
         used to build the session-aggregation input set."""

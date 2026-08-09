@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -14,10 +14,20 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { createComponentBApi } from '@/src/api/component-b-api';
 import { useAuth } from '@/src/auth/auth-context';
 import { AppText } from '@/src/components/app-text';
+import { readPublicConfig } from '@/src/config/env';
+import {
+  combineHomeSessionState,
+  derivePathNodeStates,
+  pathNodeLabel,
+  type HomeSessionState,
+  type PathNodeState,
+} from '@/src/features/home/session-progress';
 import { LearnerTabBar } from '@/src/features/navigation/learner-tab-bar';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { firstNameOf } from '@/src/utils/display-name';
 
 const brandArtwork = require('../../../assets/images/mathmingo-header.png');
 const heroArtwork = require('../../../assets/images/hero-section.png');
@@ -34,41 +44,90 @@ const heroSnapThreshold = 0.3;
  */
 let heroDismissedThisAppSession = false;
 
-type ComponentBSkillId =
-  | 'counting'
-  | 'number_sense'
-  | 'place_value'
-  | 'addition'
-  | 'subtraction'
-  | 'multiplication'
-  | 'division';
-
-const componentBSkills = {
-  counting: { eligibleGrades: [2, 3], label: 'Counting' },
-  number_sense: { eligibleGrades: [2, 3], label: 'Number Sense' },
-  place_value: { eligibleGrades: [2, 3], label: 'Place Value' },
-  addition: { eligibleGrades: [2, 3], label: 'Addition' },
-  subtraction: { eligibleGrades: [2, 3], label: 'Subtraction' },
-  multiplication: { eligibleGrades: [3], label: 'Multiplication' },
-  division: { eligibleGrades: [3], label: 'Division' },
-} as const satisfies Record<ComponentBSkillId, { eligibleGrades: readonly (2 | 3)[]; label: string }>;
-
-const pathNodes = [
-  { color: colors.primary, left: '5%', skillId: 'counting', state: 'current', subtitle: 'Current Lesson', top: '14%' },
-  { color: colors.accentBlue, left: '20%', skillId: 'number_sense', state: 'planned', subtitle: 'On your path', top: '27.5%' },
-  { color: colors.accentGreen, left: '9%', skillId: 'place_value', state: 'planned', subtitle: 'On your path', top: '41%' },
-  { color: '#ffb51f', left: '19%', skillId: 'addition', state: 'planned', subtitle: 'On your path', top: '54.5%' },
-  { color: '#9a64df', left: '20%', skillId: 'subtraction', state: 'planned', subtitle: 'On your path', top: '68%' },
+// Node POSITIONS ONLY — where the artwork's path markers sit, and the colour each one is painted.
+// These are facts about the illustration, not about the session, and their count is a property of
+// the artwork rather than a session length: `PATH_NODE_POSITIONS.length` is passed to
+// `derivePathNodeStates` as the number of positions available to draw into, and the number of nodes
+// actually drawn comes from the server's `opportunities_total_bound`. No session length is assumed
+// or hardcoded here.
+//
+// What used to be here — a skill-label table plus per-node skill ids and lesson-status subtitles — is
+// gone. The server has no path, no ordering and no per-skill progress, so those labels asserted a
+// structure the backend does not have. See session-progress.ts for the reframe. (The exact removed
+// strings are deliberately not quoted anywhere in this file: home-session-progress.test.ts greps for
+// them bluntly, and a guard with exemptions is a guard nobody trusts.)
+const PATH_NODE_POSITIONS = [
+  { color: colors.primary, left: '5%', top: '14%' },
+  { color: colors.accentBlue, left: '20%', top: '27.5%' },
+  { color: colors.accentGreen, left: '9%', top: '41%' },
+  { color: '#ffb51f', left: '19%', top: '54.5%' },
+  { color: '#9a64df', left: '20%', top: '68%' },
 ] as const;
+
+const nodeSubtitles: Record<PathNodeState, string> = {
+  current: 'Up next',
+  done: 'Answered',
+  pending: 'Not started',
+};
 
 /** Shared learner landing page; Component B owns the lesson path and preparation entry points. */
 export function LearnerHomeScreen() {
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const compact = height < 760;
-  const { me, profileName } = useAuth();
-  const displayName = me?.learner?.display_name?.trim() || profileName || 'Yass';
-  const openBLearning = () => router.push('/(learner)/prepare');
+  const { getAccessToken, me, profileName } = useAuth();
+  // The personal-name fallback that used to sit at the end of this chain is gone: it was a real
+  // person's name, so a child whose profile had not loaded yet was greeted as someone else.
+  // 'Math Explorer' is the same neutral placeholder the prep screen uses. (The removed name is not
+  // quoted here — a grep guard enforces its absence.)
+  const displayName = firstNameOf(me?.learnerProfile?.name.trim() || profileName || 'Math Explorer');
+  const configResult = useMemo(() => readPublicConfig(), []);
+  const api = useMemo(
+    () => (configResult.config ? createComponentBApi(configResult.config) : null),
+    [configResult.config],
+  );
+  const [sessionState, setSessionState] = useState<HomeSessionState>({ kind: 'not-in-progress' });
+  const mountedRef = useRef(true);
+
+  // Two best-effort reads. Neither may block the screen: any failure degrades to not-in-progress,
+  // which is self-correcting because POST /b/sessions returns an existing session anyway (see
+  // combineHomeSessionState). The home screen must never show a child an error where their path was.
+  useEffect(() => {
+    mountedRef.current = true;
+    const load = async () => {
+      if (!api) return;
+      try {
+        const accessToken = await getAccessToken();
+        if (!accessToken) return;
+        const { session } = await api.getActiveSession(accessToken);
+        if (!session || session.state !== 'active') return;
+        const summary = await api.getSessionSummary(session.session_id, accessToken);
+        if (!mountedRef.current) return;
+        setSessionState(combineHomeSessionState(session, summary));
+      } catch {
+        // Deliberately silent: the neutral not-in-progress state is already on screen.
+      }
+    };
+    void load();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [api, getAccessToken]);
+
+  const inProgress = sessionState.kind === 'in-progress';
+  const nodeStates = derivePathNodeStates(sessionState, PATH_NODE_POSITIONS.length);
+  // In progress, the hero and the current node both go straight into the open session; otherwise
+  // through preparation, which is what performs the readiness check before starting one.
+  const openBLearning = () => {
+    if (sessionState.kind === 'in-progress') {
+      router.push({
+        pathname: '/(learner)/session/[sessionId]',
+        params: { sessionId: sessionState.sessionId },
+      });
+      return;
+    }
+    router.push('/(learner)/prepare');
+  };
   const scrollRef = useRef<ScrollView>(null);
   const dismissTriggeredRef = useRef(heroDismissedThisAppSession);
   const snapInFlightRef = useRef(false);
@@ -153,7 +212,9 @@ export function LearnerHomeScreen() {
       ]}>
       <View style={[styles.pathPanel, { width: pathPanelWidth }]}>
           <Image
-            accessibilityLabel="Learning path through five lessons to a treasure chest"
+            // The artwork is unchanged; only its description is, since it no longer stands for five
+            // lessons — nothing in the backend has lessons.
+            accessibilityLabel="A winding path leading to a treasure chest"
             contentFit="cover"
             source={learningPathArtwork}
             style={styles.learningPathArtwork}
@@ -161,12 +222,12 @@ export function LearnerHomeScreen() {
           <View style={styles.pathHeading}>
             <Ionicons color={colors.accentGreen} name="map" size={compact ? 22.5 : 27} />
             <AppText style={[styles.pathHeadingText, compact && styles.pathHeadingTextCompact]}>
-              Your Learning Path
+              {inProgress ? 'Your Session' : 'Ready to Play'}
             </AppText>
           </View>
-          {pathNodes.map((node, index) => {
-            const skill = componentBSkills[node.skillId];
-            const isCurrent = node.state === 'current';
+          {nodeStates.map((nodeState, index) => {
+            const node = PATH_NODE_POSITIONS[index];
+            const isCurrent = nodeState === 'current';
             const stageContent = (
               <>
               <View
@@ -182,10 +243,14 @@ export function LearnerHomeScreen() {
               <View style={[styles.pathStageCard, isCurrent && styles.pathStageCardActive]}>
                 <View style={styles.pathStageCopy}>
                   <AppText style={[styles.pathStageTitle, compact && styles.pathStageTitleCompact]}>
-                    {skill.label}
+                    {`Question ${index + 1}`}
                   </AppText>
                   <View style={styles.pathStageProgress}>
-                    {!isCurrent && <Ionicons color="#ffb51f" name="star" size={compact ? 11.5 : 13.8} />}
+                    {/* A star marks a question actually answered. It used to appear on every
+                        not-current node, i.e. on questions that had not happened yet. */}
+                    {nodeState === 'done' && (
+                      <Ionicons color="#ffb51f" name="star" size={compact ? 11.5 : 13.8} />
+                    )}
                     <AppText
                       style={[
                         styles.pathStageSubtitle,
@@ -194,13 +259,15 @@ export function LearnerHomeScreen() {
                         isCurrent && compact && styles.pathStageSubtitleActiveCompact,
                         isCurrent && { color: node.color },
                       ]}>
-                      {node.subtitle}
+                      {nodeSubtitles[nodeState]}
                     </AppText>
                   </View>
                 </View>
                 <Ionicons
                   color={isCurrent ? colors.primary : node.color}
-                  name={isCurrent ? 'play' : 'sparkles'}
+                  name={
+                    isCurrent ? 'play' : nodeState === 'done' ? 'checkmark-circle' : 'ellipse-outline'
+                  }
                   size={isCurrent ? (compact ? 22.4 : 27.2) : compact ? 17.6 : 20.8}
                 />
               </View>
@@ -210,10 +277,12 @@ export function LearnerHomeScreen() {
             if (isCurrent) {
               return (
                 <Pressable
-                  accessibilityHint="Opens Component B session preparation"
-                  accessibilityLabel={`${skill.label}, current lesson`}
+                  accessibilityHint={
+                    inProgress ? 'Opens your current question' : 'Opens session preparation'
+                  }
+                  accessibilityLabel={pathNodeLabel(index, nodeState)}
                   accessibilityRole="button"
-                  key={node.skillId}
+                  key={index}
                   onPress={openBLearning}
                   style={({ pressed }) => [
                     styles.pathStage,
@@ -227,9 +296,9 @@ export function LearnerHomeScreen() {
 
             return (
               <View
-                accessibilityLabel={`${skill.label}, on your learning path`}
+                accessibilityLabel={pathNodeLabel(index, nodeState)}
                 accessible
-                key={node.skillId}
+                key={index}
                 style={[styles.pathStage, { left: node.left, top: node.top }]}>
                 {stageContent}
               </View>
@@ -325,7 +394,7 @@ export function LearnerHomeScreen() {
                   pressed && styles.buttonPressed,
                 ]}>
                 <AppText style={[styles.heroButtonText, compact && styles.heroButtonTextCompact]}>
-                  Continue Adventure
+                  {inProgress ? 'Resume Adventure' : 'Start Adventure'}
                 </AppText>
                 <Ionicons color={colors.primaryForeground} name="chevron-forward" size={compact ? 18.6 : 22.32} />
               </Pressable>

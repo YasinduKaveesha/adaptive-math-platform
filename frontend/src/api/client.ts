@@ -1,6 +1,12 @@
-import type { ApiErrorEnvelope, MeResponse } from '@/src/api/contracts';
+import type { ApiErrorEnvelope, AuthenticatedPrincipal, AuthorizedLearner } from '@/src/api/contracts';
 import { ApiClientError } from '@/src/api/errors';
-import { isApiErrorEnvelope, isMeResponse } from '@/src/api/runtime-validation';
+import { listLearnerClassrooms } from '@/src/api/learner-onboarding-api';
+import { pickMembership } from '@/src/api/membership-selection';
+import {
+  isApiErrorEnvelope,
+  isAuthenticatedPrincipal,
+  isLearnerProfileResponse,
+} from '@/src/api/runtime-validation';
 import type { PublicConfig } from '@/src/config/env';
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -22,7 +28,7 @@ async function wait(milliseconds: number) {
 }
 
 function mapHttpError(status: number, envelope?: ApiErrorEnvelope) {
-  const requestId = envelope?.request_id;
+  const requestId = envelope?.error.request_id;
   if (status === 401) return new ApiClientError('unauthenticated', 'The session is no longer valid.', status, requestId, envelope);
   if (status === 403) return new ApiClientError('forbidden', 'This account is not approved for learner access.', status, requestId, envelope);
   if (status === 400 || status === 422) return new ApiClientError('invalid-request', 'The request could not be accepted.', status, requestId, envelope);
@@ -90,28 +96,92 @@ async function requestMeOnce(config: PublicConfig, accessToken: string) {
     accessToken,
     method: 'GET',
     path: '/api/v1/me',
-    validate: isMeResponse,
+    validate: isAuthenticatedPrincipal,
   });
+}
+
+async function requestLearnerProfileOnce(config: PublicConfig, accessToken: string) {
+  return requestJson(config, {
+    accessToken,
+    method: 'GET',
+    path: '/api/v1/learner/profile',
+    validate: isLearnerProfileResponse,
+  });
+}
+
+async function fetchPrincipal(
+  config: PublicConfig,
+  accessToken: string,
+  refreshAccessToken: RefreshAccessToken,
+): Promise<{ principal: AuthenticatedPrincipal; accessToken: string }> {
+  try {
+    return { accessToken, principal: await requestMeOnce(config, accessToken) };
+  } catch (error) {
+    if (!(error instanceof ApiClientError)) throw error;
+    if (error.kind === 'unauthenticated') {
+      const refreshedAccessToken = await refreshAccessToken();
+      if (!refreshedAccessToken) throw error;
+      return { accessToken: refreshedAccessToken, principal: await requestMeOnce(config, refreshedAccessToken) };
+    }
+    if (error.kind === 'network' || error.kind === 'timeout' || (error.kind === 'server' && (error.status ?? 0) >= 500)) {
+      await wait(SAFE_GET_RETRY_DELAY_MS);
+      return { accessToken, principal: await requestMeOnce(config, accessToken) };
+    }
+    throw error;
+  }
+}
+
+async function getLearnerProfileOrNull(config: PublicConfig, accessToken: string) {
+  try {
+    return await requestLearnerProfileOnce(config, accessToken);
+  } catch (error) {
+    if (!(error instanceof ApiClientError)) throw error;
+    // A clean 404 means "no learner profile yet" -> onboarding. Anything else (network,
+    // 5xx, unexpected 4xx) fails closed as unavailable rather than guessing at onboarding.
+    if (error.status === 404) return null;
+    if (error.kind === 'unauthenticated' || error.kind === 'forbidden') throw error;
+    throw new ApiClientError(
+      'unavailable',
+      'We could not verify the learner profile.',
+      error.status,
+      error.requestId,
+      error.envelope,
+    );
+  }
+}
+
+async function getClassroomMembershipOrNull(config: PublicConfig, accessToken: string) {
+  try {
+    const response = await listLearnerClassrooms(config, accessToken);
+    // An empty list is a legitimate "no membership requested yet" state, not an error.
+    return pickMembership(response.memberships);
+  } catch (error) {
+    if (!(error instanceof ApiClientError)) throw error;
+    if (error.kind === 'unauthenticated' || error.kind === 'forbidden') throw error;
+    throw new ApiClientError(
+      'unavailable',
+      'We could not verify the classroom membership.',
+      error.status,
+      error.requestId,
+      error.envelope,
+    );
+  }
 }
 
 export async function getAuthorizedLearner(
   config: PublicConfig,
   accessToken: string,
   refreshAccessToken: RefreshAccessToken,
-): Promise<MeResponse> {
-  try {
-    return await requestMeOnce(config, accessToken);
-  } catch (error) {
-    if (!(error instanceof ApiClientError)) throw error;
-    if (error.kind === 'unauthenticated') {
-      const refreshedAccessToken = await refreshAccessToken();
-      if (!refreshedAccessToken) throw error;
-      return requestMeOnce(config, refreshedAccessToken);
-    }
-    if (error.kind === 'network' || error.kind === 'timeout' || (error.kind === 'server' && (error.status ?? 0) >= 500)) {
-      await wait(SAFE_GET_RETRY_DELAY_MS);
-      return requestMeOnce(config, accessToken);
-    }
-    throw error;
-  }
+): Promise<AuthorizedLearner> {
+  const { accessToken: verifiedAccessToken, principal } = await fetchPrincipal(
+    config,
+    accessToken,
+    refreshAccessToken,
+  );
+
+  const learnerProfile = await getLearnerProfileOrNull(config, verifiedAccessToken);
+  if (!learnerProfile) return { classroomMembership: null, learnerProfile: null, principal };
+
+  const classroomMembership = await getClassroomMembershipOrNull(config, verifiedAccessToken);
+  return { classroomMembership, learnerProfile, principal };
 }

@@ -453,7 +453,13 @@ class AttemptRecord(ProvenanceMixin, Base):
     parent opportunity and is unique per opportunity. ``submitted_value`` is the learner's raw
     submission (never the accepted-answer set); ``response_matched`` is the server-computed
     outcome for ``RESPONSE`` events only (``NULL`` for ``TIMEOUT``). ``client_elapsed_ms`` is
-    telemetry only — never used for correctness or BKT."""
+    telemetry only — never used for correctness or BKT.
+
+    BF-2 (migration 20260801_0001): ``submitted_value`` is NOT NULL unconditionally, including on
+    ``TIMEOUT`` — a late-but-real answer is persisted (never scored: ``response_matched`` stays
+    NULL for ``TIMEOUT``, exactly as before). Previously the constraint below required
+    ``submitted_value IS NULL`` on timeout, which meant the answer was discarded and unrecoverable
+    the moment the request completed."""
 
     __tablename__ = "b_attempts"
     __table_args__ = (
@@ -461,8 +467,9 @@ class AttemptRecord(ProvenanceMixin, Base):
         CheckConstraint("event_kind IN ('RESPONSE', 'TIMEOUT')", name="ck_b_attempts_event_kind"),
         CheckConstraint("attempt_index >= 1", name="ck_b_attempts_attempt_index_positive"),
         CheckConstraint(
-            "(event_kind = 'RESPONSE' AND response_matched IS NOT NULL AND submitted_value IS NOT NULL) "
-            "OR (event_kind = 'TIMEOUT' AND response_matched IS NULL AND submitted_value IS NULL)",
+            "submitted_value IS NOT NULL "
+            "AND ((event_kind = 'RESPONSE' AND response_matched IS NOT NULL) "
+            "OR (event_kind = 'TIMEOUT' AND response_matched IS NULL))",
             name="ck_b_attempts_response_matched_consistency",
         ),
         CheckConstraint("client_elapsed_ms IS NULL OR client_elapsed_ms >= 0", name="ck_b_attempts_client_elapsed_ms_nonnegative"),

@@ -499,6 +499,56 @@ def test_expired_deadline_records_timeout_and_creates_no_bkt_observation() -> No
             )
             assert skill_state.observation_count == 0
 
+            # BF-2: the learner's answer must be persisted even though it arrived after the
+            # deadline — not compared (response_matched stays None, asserted above), but no longer
+            # silently discarded. AttemptResponse itself never exposes submitted_value (it is not
+            # part of the safe public DTO), so this is checked against the persisted row directly.
+            attempt = await session.scalar(
+                select(AttemptRecord).where(AttemptRecord.item_opportunity_id == item_opportunity_id)
+            )
+            assert attempt.submitted_value == "7"
+            assert attempt.event_kind == "TIMEOUT"
+
+        await database_engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_timeout_submitted_value_matches_what_was_sent_not_the_correct_answer() -> None:
+    """BF-2 regression guard, independent of the happy-path test above: the persisted value must
+    be the learner's own submission, not silently coerced to the correct answer or left blank.
+    Submits a value that does NOT match the correct answer ("7") to prove this isn't a passing
+    accident of the fixture using the same string for both."""
+    alembic("upgrade", "head")
+
+    async def exercise() -> None:
+        database_engine, factory = isolated_database()
+        async with factory() as session:
+            session_id, learner_id, _bundle_id, subject = await _seed_learner_session_and_skill_state(session)
+            item_opportunity_id = await _open_opportunity(
+                session, session_id=session_id, learner_id=learner_id, timeout=timedelta(seconds=0)
+            )
+            await session.commit()
+
+        await asyncio.sleep(0.05)
+
+        service = AttemptSubmissionService(uow_factory=partial(SqlAlchemyUnitOfWork, factory=factory))
+        response = await _submit(
+            service,
+            subject=subject,
+            session_id=session_id,
+            item_opportunity_id=item_opportunity_id,
+            submitted_value="banana",
+        )
+        assert response.event_kind == "TIMEOUT"
+        assert response.response_matched is None
+
+        async with factory() as session:
+            attempt = await session.scalar(
+                select(AttemptRecord).where(AttemptRecord.item_opportunity_id == item_opportunity_id)
+            )
+            assert attempt.submitted_value == "banana"
+
         await database_engine.dispose()
 
     asyncio.run(exercise())

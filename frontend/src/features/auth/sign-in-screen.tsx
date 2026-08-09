@@ -21,8 +21,6 @@ type AuthMode = 'sign-in' | 'sign-up';
 const genderOptions: { label: string; value: Gender }[] = [
   { label: 'Female', value: 'female' },
   { label: 'Male', value: 'male' },
-  { label: 'Non-binary', value: 'non_binary' },
-  { label: 'Prefer not to say', value: 'prefer_not_to_say' },
 ];
 
 /** Preserved email login/account UI; deferred while Component B pages are built. */

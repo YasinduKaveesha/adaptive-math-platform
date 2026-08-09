@@ -138,7 +138,12 @@ def _response_time_stats(
         return None, None, None
     mean = _mean(rts)
     median = _quantile(sorted(rts), 0.5)
-    std = _population_std(rts, mean)
+    # Std is undefined for <2 timed responses and 0.0 for zero variance; contracts.py's
+    # b_item_response_time_std_sec is PositiveTiming | None (gt=0.0), so export None rather
+    # than a rejected 0.0 — same "no usable evidence" precedent as the all-timeout None case.
+    std = _population_std(rts, mean) if len(rts) >= 2 else None
+    if std == 0.0:
+        std = None
     return mean, median, std
 
 

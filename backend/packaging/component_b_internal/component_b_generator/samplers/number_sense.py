@@ -68,9 +68,16 @@ def sample_conservation(rng: random.Random, grade: int) -> SampledContent:
         delta = -rng.randint(1, min(3, n))
     else:
         delta = 0
+    # `delta` is included in the PROMPT, not only the operands. It is presentation data: it is
+    # derived from the objects the learner is shown, and it reveals nothing the before/after visual
+    # would not already show them. Without it, a renderer knows the direction of the change but not
+    # its magnitude, so it cannot draw the "after" panel — and drawing only the `rearrange` case (the
+    # one where delta is 0) would make the presence of a visual a perfect non-mathematical cue for
+    # the answer "same".
     return SampledContent(operands={"initial_count": n, "transformation": transformation, "delta": delta},
                           prompt={"stem": "Is the quantity the same or changed?", "initial_count": n,
-                                  "transformation": transformation, "options": ["same", "changed"]})
+                                  "transformation": transformation, "delta": delta,
+                                  "options": ["same", "changed"]})
 
 
 SAMPLER = ItemSampler(

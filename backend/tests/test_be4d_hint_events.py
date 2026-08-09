@@ -54,7 +54,12 @@ ENGINEERING_BUNDLE_VERSION = "be3b-test-fixture-1.0"
 _MANIFEST_PATH, _CATALOGUE_PATH = _ENGINEERING_TEST_BUNDLES[ENGINEERING_BUNDLE_VERSION]
 SKILL_ID = "addition"
 HINT_BEARING_TEMPLATE_ID = "B-ADD04-2D-NO-REGROUP"  # carries hint_level_1/2/3 in the fixture catalogue
-NO_HINT_TEMPLATE_ID = "B-CNT02-COUNT-OBJECTS"  # carries no hint_level_* fields in the fixture catalogue
+# Every one of the fixture catalogue's 36 templates now carries governed L1/L2/L3 text, so there is
+# no longer a real template that exercises the missing-content path. Absence is constructed
+# explicitly with an id the catalogue does not contain, which `behaviour/hints.py` documents as a
+# fail-closed path ("unknown item_template_id"). The guarantee under test is unchanged: content
+# that cannot be produced raises, and is never synthesized or approximated.
+NO_HINT_TEMPLATE_ID = "B-NOT-A-REAL-TEMPLATE"
 
 
 def alembic(*args: str) -> None:
@@ -264,7 +269,8 @@ def test_first_hint_request_returns_l1_and_persists_one_event() -> None:
             service, subject=subject, session_id=session_id, item_opportunity_id=item_opportunity_id
         )
         assert response.hint_level == 1
-        assert response.content == "Add the ones first, then the tens."
+        # Verbatim from R26-IT-138 §11 (the fixture previously carried fixture-authored text).
+        assert response.content == "Add ones with ones and tens with tens."
 
         async with factory() as session:
             events = (
@@ -299,7 +305,7 @@ def test_sequential_requests_escalate_l1_l2_l3_then_refuse() -> None:
         second = await _request_hint(service, subject=subject, session_id=session_id, item_opportunity_id=item_opportunity_id)
         third = await _request_hint(service, subject=subject, session_id=session_id, item_opportunity_id=item_opportunity_id)
         assert [first.hint_level, second.hint_level, third.hint_level] == [1, 2, 3]
-        assert third.content == "Line up the digits by place value and add each column."
+        assert third.content == "Add each place separately, then combine tens and ones."
 
         with pytest.raises(ConflictError):
             await _request_hint(service, subject=subject, session_id=session_id, item_opportunity_id=item_opportunity_id)
@@ -365,7 +371,15 @@ def test_replay_with_same_idempotency_key_returns_same_level_without_escalating(
 # ---------------------------------------------------------------------------
 
 
-def test_missing_catalogue_hint_content_fails_closed() -> None:
+def test_absent_catalogue_hint_content_fails_closed() -> None:
+    """Fail-closed coverage for absent hint content, via the real service path.
+
+    NOTE: no catalogue template exercises the missing-content path any more — all 36 now carry
+    governed L1/L2/L3 text. ``NO_HINT_TEMPLATE_ID`` is therefore an id the catalogue does not
+    contain, rather than a real template that happens to lack hints. Coverage of the guarantee is
+    unchanged and deliberately retained: the lookup raises a neutral ConflictError, leaks nothing,
+    and persists no hint event.
+    """
     alembic("upgrade", "head")
 
     async def exercise() -> None:

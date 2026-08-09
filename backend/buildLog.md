@@ -5779,3 +5779,753 @@ which Node's native type-stripping can't erase on its own):
 
 This batch does NOT claim `BE5A_CONTRACT_FREEZE_BATCH_CLOSED` — a separate review decides that.
 Left uncommitted for Yasindu.
+
+## 2026-07-28 — Frontend auth/identity rewiring against the frozen v1 contract (BE5 step 5, part 1)
+
+Reconciled the four stale `contracts.ts` types identified in the BE5a batch above against the real
+generated shapes in `frontend/src/api/generated/openapi-types.ts`, and updated the minimum
+consumer code required for them to compile and behave correctly. No backend file touched; no
+classroom/invite/membership, opportunity/attempt/hint/complete, or session-recovery endpoints
+touched (those remain FE-1a/FE-1b/FE-3/FE-2 scope).
+
+**Identity (`contracts.ts`, `runtime-validation.ts`, `client.ts`, `auth-context.tsx`).** Deleted
+the fictional `MeResponse` (`roles`/`learner`/`request_id`). `GET /api/v1/me` now types and
+validates as the real `AuthenticatedPrincipal` (`user_id`, optional `email`) via a new
+`isAuthenticatedPrincipal`. Role/profile resolution is the separate `GET /api/v1/learner/profile`
+call, typed/validated against the real `LearnerProfileResponse` via a new
+`isLearnerProfileResponse`. `client.ts`'s `getAuthorizedLearner` now fetches both — principal first
+(preserving the existing unauthenticated-refresh and 5xx-retry-once behavior), then the learner
+profile using whatever access token the principal fetch ended up succeeding with — and returns a
+new composed `AuthorizedLearner = { principal, learnerProfile }` type (added to `contracts.ts`). A
+clean `404` on the profile call maps to `learnerProfile: null` (onboarding, matching prior
+routing); `401`/`403` propagate unchanged for existing handling; anything else (network, 5xx,
+unexpected 4xx) is wrapped as `ApiClientError('unavailable', ...)` — fails closed rather than
+guessing at onboarding. `auth-context.tsx`'s `me` state and `authorizeSession` now key off
+`AuthorizedLearner`/`learnerProfile` instead of the fictional `roles`/`learner.active`/
+`learner.grade`; the `AuthStatus` enum and its meanings are unchanged, only what drives them.
+`learner-home-screen.tsx` and `authorized-placeholder-screen.tsx` (both consumers of
+`useAuth().me`) updated to read `me.learnerProfile.name` instead of `me.learner.display_name`.
+
+**No `grade` field exists anywhere reachable from `AuthenticatedPrincipal` or
+`LearnerProfileResponse`.** `session-preparation-screen.tsx` previously rendered "Grade {grade}"
+from the fictional `me.learner.grade`. Removed that badge and its now-dead `gradeIcon`/`divider`
+styles entirely rather than fabricating a value; left a one-line comment at the removal site
+pointing at the gap. No replacement grade selector or other compensation added — out of scope.
+
+**Session start (`contracts.ts`, `runtime-validation.ts`, `component-b-api.ts`,
+`session-preparation-screen.tsx`).** Deleted `StartSessionRequest` (`POST /api/v1/b/sessions`
+takes no request body, only a required `Idempotency-Key` header) and the fictional
+`StartSessionResponse` (`b_session_id`/`resume`/`current_opportunity_id`/`expires_at`/
+`session_number`); consumers now use the real generated `SessionCommandResponse`
+(`session_id`/`state: 'active'|'completed'|'abandoned'`/`runtime_bundle_version`/
+`created_at_utc`/`row_version`/`request_id`), re-exported from `contracts.ts`.
+`PendingStartSessionCommand.body` is deleted (nothing to persist/replay beyond the idempotency
+key). `component-b-api.ts`'s `startSession` takes just `(idempotencyKey, accessToken)` — no body
+parameter — and validates responses with a new `isSessionCommandResponse` (replacing
+`isStartSessionResponse`); the dev fixture's `createFixtureApi` returns the real
+`SessionCommandResponse` shape and no longer branches on `resume`/`starting-response` fixture
+names (removed from `.env.example`'s documented fixture list too, since those fields no longer
+exist to fixture). `session-preparation-screen.tsx`'s `openActiveSession` now treats
+`state === 'active'` as success (routes via `response.session_id`) and any other state
+(`'completed'`/`'abandoned'`) as `technical-failure`; a one-line comment notes that resume
+detection via `GET /api/v1/b/sessions/active` is deferred to FE-2, not implemented here.
+`createStartCommand` no longer builds a `client_timezone`/`mobile_app_version` body, so the
+now-unused `getTimezone()` helper and `mobileAppVersion` import were removed from that screen.
+
+**Verification** (from `frontend/`, all green):
+- `npx expo-doctor@latest` — 18/18 checks passed.
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — clean (required `NODE_OPTIONS=--max-old-space-size=4096` in this environment;
+  the default heap OOM'd on `expo lint`, unrelated to this batch's changes).
+- `npm run test:contract` — 4/4 passed, unregressed (frozen-artefact checksum, generated-types
+  staleness, `isHealthReadyResponse` fail-closed-per-field, dev-fixture env gating).
+
+**Files touched:** `frontend/.env.example`, `frontend/src/api/contracts.ts`,
+`frontend/src/api/runtime-validation.ts`, `frontend/src/api/client.ts`,
+`frontend/src/api/component-b-api.ts`, `frontend/src/auth/auth-context.tsx`,
+`frontend/src/features/session/session-preparation-screen.tsx`,
+`frontend/src/features/home/learner-home-screen.tsx`,
+`frontend/src/features/auth/authorized-placeholder-screen.tsx`. No backend file touched.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state.
+
+## 2026-07-28 — FE-1a: learner onboarding (profile, join-code, membership status)
+
+Implemented profile creation, classroom join-code resolve/confirm, and a new pending/approved
+membership-status screen against the frozen v1 contract's `learner-profile` and
+`classroom-invites`/`classroom-memberships` endpoints. No backend file touched. Out of scope and
+untouched: FE-1b teacher-side screens/endpoints, FE-2 session-prep, FE-3 opportunity/attempt/hint,
+and `AuthStatus`'s enum/gating logic (see open question below).
+
+**Contracts and validators (`contracts.ts`, `runtime-validation.ts`).** Re-exported
+`ProfileCreateRequest`, `InviteTokenRequest`, `InviteResolveResponse`, `MembershipRequestResponse`,
+`LearnerMembershipListResponse`, `LearnerMembershipListItem` from the generated types (no
+hand-rolled shapes). Added fail-closed validators for all of them, following the existing
+`is<TypeName>` pattern: `isProfileCreateRequest`, `isInviteTokenRequest`,
+`isInviteResolveResponse`, `isMembershipRequestResponse`, `isLearnerMembershipListResponse` (plus a
+private `isLearnerMembershipListItem` used for the array-of-items check). `grade` and `state` are
+checked against `Set`s of the contract's literal enum values.
+
+**New endpoint file (`learner-onboarding-api.ts`).** Added as a sibling to `component-b-api.ts`
+(kept separate rather than crowding it, since this is a different domain) with
+`createLearnerProfile`, `resolveClassroomInvite`, `requestClassroomMembership`,
+`listLearnerClassrooms` — each a thin wrapper over the shared `requestJson` from `client.ts`, no
+direct `fetch` calls. The three state-changing calls take a caller-supplied `idempotencyKey`; no
+new key-generation helper was added, matching the existing convention (session-preparation's
+`Crypto.randomUUID()` per call site).
+
+**Profile creation (`first-time-welcome-screen.tsx`).** Replaced the bare Continue button with a
+name field pre-filled from `profileName` (Supabase `display_name`) that the child can edit, then
+calls `POST /api/v1/learner/profile` with a `useRef`-held idempotency key (not persisted to
+SecureStore — a deliberate simplification versus the session-start pending-command pattern, since
+losing an in-flight profile-create on app kill is a low-frequency, low-harm case for this batch).
+On success, calls `retryAuthorization()` so `me.learnerProfile` comes from the server, then routes
+to `/(onboarding)/teacher-link`. On 422, shows a correction message and rotates to a fresh
+idempotency key (edited name = new action); on network/5xx, keeps the same key and lets the child
+retry.
+
+**Join-code screen (`teacher-link-instructions-screen.tsx`).** Replaced the QR placeholder and the
+`continueToComponentBPreview` dev-bypass entirely with real text entry (placeholder example
+`M7KP-4X9D`) and a two-step confirm: "Check code" calls `POST /classroom-invites/resolve` and shows
+`"{classroom_name}'s Grade {2|3} classroom — is this right?"` (or a generic "This classroom" if
+`classroom_name` is null) without auto-submitting; a second explicit "Yes, that's right" button
+calls `POST /classroom-memberships/requests` with the same invite token and its own fresh
+idempotency key, then routes to the new status screen with the created `classroom_membership_id`.
+On resolve, 422/404 (an unrecognized code) rotates to a fresh resolve key — a corrected code is a
+new action — and returns to code entry with a correction message; a network/5xx failure on resolve
+keeps the same resolve key and also returns to code entry, so the identical code can be retried
+without burning the key. On confirm, 422 rotates the membership key and returns to code entry the
+same way; network/5xx keeps the same membership key and stays on the preview step, so the
+previewed classroom isn't lost.
+
+**New pending/approved screen (`classroom-status-screen.tsx` + `app/(onboarding)/classroom-status.tsx`).**
+Calls `GET /api/v1/learner/classrooms` only on mount and on pull-to-refresh — never polls
+continuously while foregrounded, per frontend.md 15.10's don't-poll guidance applied by analogy.
+Matches the membership by the `membershipId` route param, falling back to the most recently
+requested item if absent. PENDING shows "Waiting for your teacher to approve"; APPROVED routes on
+to `/(learner)/home`; REJECTED shows a safe, non-shaming message with a "Try a different code"
+button back to the join-code screen.
+
+**Open question — not resolved here, needs a decision:** `auth-context.tsx`'s `authorizeSession`
+still sets `status: 'authorized'` as soon as `learnerProfile` exists, with no check on classroom
+membership state. Left unchanged per instructions, but flagging a concrete consequence: because
+step 3 above calls `retryAuthorization()` right after profile creation (as required), `status`
+flips to `'authorized'` *before* the child reaches the join-code or status screens, and
+`app/_layout.tsx`'s `Stack.Protected guard={learnerAccess}` will make `/(learner)` reachable (and
+`/(onboarding)` unreachable) at that point. In other words, with the current gating logic a learner
+could bypass or get pushed past the join-code/status flow immediately after profile creation. This
+is exactly the gate question raised in the batch: should `authorized` require an approved classroom
+membership, not just a learner profile? Needs a supervisor decision before this flow is fully
+reliable; no fix attempted here.
+
+**Verification** (from `frontend/`, all green):
+- `npx expo-doctor@latest` — 18/18 checks passed.
+- `npx tsc --noEmit` — clean (required regenerating `.expo/types/router.d.ts` via a brief offline
+  `expo start` so the two new route literals type-checked; that directory is gitignored and
+  regenerates automatically).
+- `npm run lint` — clean.
+- `npm run test:contract` — 4/4 passed, unregressed.
+
+**Files touched:** `frontend/src/api/contracts.ts`, `frontend/src/api/runtime-validation.ts`,
+`frontend/src/api/learner-onboarding-api.ts` (new),
+`frontend/src/features/onboarding/first-time-welcome-screen.tsx`,
+`frontend/src/features/onboarding/teacher-link-instructions-screen.tsx`,
+`frontend/src/features/onboarding/classroom-status-screen.tsx` (new),
+`frontend/app/(onboarding)/classroom-status.tsx` (new),
+`frontend/app/(onboarding)/welcome.tsx`, `frontend/app/(onboarding)/teacher-link.tsx` (stale
+deferred-work comments removed). No backend file touched.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state.
+
+## 2026-07-28 — Classroom-membership gating + onboarding entry-routing
+
+Resolves the FE-1a open question with a supervisor-approved decision: `authorized` status now
+requires an APPROVED classroom membership, not just a learner profile. No backend file touched.
+Out of scope and untouched: FE-1b, FE-2, FE-3, the `AuthStatus` enum's members (only the
+data-condition driving `'authorized'` changed), and the already-correct in-flow forward navigation
+in welcome/teacher-link/classroom-status.
+
+**Shared membership-selection helper (`src/api/membership-selection.ts`, new).** Extracted the
+`pickMembership` function that `classroom-status-screen.tsx` already had locally (matches a
+membership by `membership_id` if given, else falls back to the most recently requested item) to a
+new small file under `src/api/`, since `client.ts` must not import from `src/features/`.
+`classroom-status-screen.tsx` now imports it from there instead of defining its own copy.
+
+**`AuthorizedLearner` extended (`contracts.ts`).** Added `classroomMembership:
+LearnerMembershipListItem | null` alongside the existing `principal`/`learnerProfile` fields.
+
+**`getAuthorizedLearner` extended (`client.ts`).** After `learnerProfile` resolves and is non-null,
+now also calls `listLearnerClassrooms` and picks the most relevant membership via the shared
+`pickMembership` (no `membershipId` — just "most recently requested"). Split into
+`getLearnerProfileOrNull` and the new `getClassroomMembershipOrNull`, both following the same
+fail-closed rule already used for the profile lookup: an empty membership list is a legitimate "no
+membership yet" state (`classroomMembership: null`), but network/5xx/unexpected errors wrap as
+`ApiClientError('unavailable', ...)` rather than silently guessing or crashing `/me` resolution.
+`client.ts` now imports `listLearnerClassrooms` from `learner-onboarding-api.ts`, which itself
+imports `requestJson` from `client.ts` — a function-level circular import, not a value-level one,
+so it resolves fine under Metro/TypeScript (confirmed by `tsc --noEmit` below).
+
+**Auth condition changed (`auth-context.tsx`).** `authorizeSession` now flips to `'authorized'`
+only when `learnerProfile` exists AND `classroomMembership?.state === 'APPROVED'`; any other
+combination (no profile, no membership, PENDING, REJECTED) sets `'onboarding'`, exactly as before
+but now membership-aware. No new `AuthStatus` values added — `'onboarding'` remains the single
+catch-all; which onboarding screen to show is a routing decision, not an auth-status decision.
+
+**New onboarding entry point (`app/(onboarding)/index.tsx`, new + `_layout.tsx`).** Added as the
+group's real entry/re-entry route (app boot, or returning to `(onboarding)` after being elsewhere),
+mirroring the root `app/index.tsx`'s status-based redirect pattern. Reads `me`/`status` from
+`useAuth()` and does a single `router.replace`: no `learnerProfile` -> `welcome`; profile but no
+`classroomMembership` -> `teacher-link`; membership present (PENDING or REJECTED; APPROVED never
+reaches here since that flips `AuthStatus` to `'authorized'` and the outer guard in `app/_layout.tsx`
+routes to `(learner)` first) -> `classroom-status` with `membershipId` param, matching how
+`teacher-link-instructions-screen.tsx` already navigates there after a fresh request. Renders only a
+loading state while `status === 'checking'` — never redirects on stale/incomplete data.
+`(onboarding)/_layout.tsx` now declares `<Stack.Screen name="index" />` first, mirroring how the
+root layout explicitly declares its own `index`. Also updated the root `app/index.tsx`'s onboarding
+case to redirect to `/(onboarding)` instead of hardcoding `/(onboarding)/welcome`, so app boot
+actually goes through the new entry-routing decision instead of bypassing it.
+
+**Verification** (from `frontend/`):
+- `npx expo-doctor@latest`
+- `npx tsc --noEmit`
+- `npm run lint`
+- `npm run test:contract` (must not regress against FE-1a's 4/4)
+
+**Files touched:** `frontend/src/api/membership-selection.ts` (new), `frontend/src/api/contracts.ts`,
+`frontend/src/api/client.ts`, `frontend/src/auth/auth-context.tsx`,
+`frontend/src/features/onboarding/classroom-status-screen.tsx`,
+`frontend/app/(onboarding)/index.tsx` (new), `frontend/app/(onboarding)/_layout.tsx`,
+`frontend/app/index.tsx`. No backend file touched.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state.
+
+## 2026-07-29 — BE-G1: assign `Learner.grade` on classroom-membership approval (backend bug fix)
+
+**The bug.** `Learner.grade` was written in exactly one place in all of `backend/app/` —
+`application/profile_classroom.py:117`, which writes `grade=None` at learner-profile creation.
+Membership approval (`application/classroom_membership.py`, `approve_membership`) never touched
+it. But `application/opportunity_selection.py:521-523` fails closed with `ConflictError`/409 when
+`learner.grade is None`. Net effect: a learner could complete the entire onboarding flow —
+profile -> join code -> membership request -> teacher approval -> start session — and then EVERY
+question request 409'd forever. There was no path in the product to a usable learner, which
+blocked the per-screen "design UI -> integrate the real backend API -> test end-to-end" loop the
+frontend work is following. `test_be4f_transactional_sweep.py::setup_learner` had already
+documented the symptom in a comment (it sets `Learner.grade` directly in SQL to work around it);
+this batch removes the underlying cause.
+
+**The fix** (`app/application/classroom_membership.py`, the only production file changed).
+Inside `ClassroomMembershipService.approve_membership`, after the state/decision fields are set on
+the membership and before the `flush()`: load the membership's `Classroom` row, map its grade to
+the learner's integer grade, load the `Learner` for `membership.learner_id`, and assign it. The
+mapping is an EXPLICIT module-level dict —
+`_CLASSROOM_GRADE_TO_LEARNER_GRADE = {"GRADE_2": 2, "GRADE_3": 3}` — not string slicing or
+parsing. `Classroom.grade` is `String(16)` with a `GRADE_2|GRADE_3` check constraint;
+`Learner.grade` is a nullable `SmallInteger` with `ck_b_learners_grade` permitting only
+`NULL|2|3`. An explicit dict raises `KeyError` if a third classroom grade is ever added, which is
+the desired behavior: a silent mis-map here would corrupt catalogue eligibility. The write sits
+inside the existing advisory xact lock (`classroom_membership.approve:{learner_id}`) and the
+`with_for_update()` on the membership row, so it is race-safe; no additional lock was added.
+
+**SCOPE NOTE — explicitly stated.** `grade` here is ROSTER METADATA the teacher already chose
+when creating the classroom (`Classroom.grade` is NOT NULL and is supplied at
+`POST /api/v1/classrooms`). It selects which catalogue templates are eligible; it sets no mastery
+prior, no BKT parameter, no difficulty ladder, no session bound, and no attempt limit. This batch
+therefore introduces NO scientific behavior, clears NO gate-B item, and authorizes NO real-child,
+pilot, or production use. It proceeds under the project-director instruction in
+`backend/provenance/component-b-be4-engineering-continuation-instruction.json` — TEST-provenance
+DRAFT bundles only.
+
+**Deliberately unchanged.** `reject_membership` (rejection must never touch grade —
+asserted below). `MembershipDecisionResponse` and every other DTO/schema: the response shape is
+byte-identical, so `backend/contract/openapi.v1.json`'s sha256 is unchanged and both
+contract-freeze tests (`backend/tests/test_be5a_contract_freeze.py`,
+`frontend/src/api/__tests__/contract-freeze.test.ts`) stayed green without being touched. The
+route set (no new route; `test_be2_architecture_guards.py` asserts `_current_routes() ==
+EXPECTED_ROUTES` exactly). No migration, no new column, no seed data.
+
+**Idempotency, verified on both paths.** The idempotency replay at the top of
+`approve_membership` returns the stored canonical response before any grade write, so a retried
+approval with the same `Idempotency-Key` re-reads the same grade rather than rewriting it. A
+second approval with a FRESH key still hits the `membership.state != "PENDING"` guard and fails
+closed with 409, leaving the grade untouched. Both are asserted.
+
+**No guard amendments were needed.** All three pre-existing `grade is None` assertions were
+re-checked and all three still pass UNCHANGED, because each tests a state where NULL is genuinely
+correct: `test_classroom_membership.py:589` (after a membership REQUEST — state PENDING, not
+approved), `test_classroom_membership.py:862` (after a ROLLED-BACK failed approval — still
+PENDING; the injected `_audit` failure fires after the grade assignment but before commit, so the
+whole transaction including the grade write rolls back), and `test_profile_classroom.py:78`
+(after profile creation, no classroom yet). No existing test was edited.
+
+**New test** — `backend/tests/test_learner_activation_path.py` (new, 5 tests). Drives the
+COMPLETE HTTP chain through real FastAPI routes and real Postgres, following the existing
+auth-override + isolated-database patterns (`dependency_overrides` on
+`get_authenticated_principal`, fresh `uuid4()` subjects per test, and
+`test_be4f_transactional_sweep.py`'s `_pinned_lifecycle_service` trick to pin
+`POST /api/v1/b/sessions` deterministically to the BE3b TEST-provenance DRAFT fixture bundle
+rather than depending on which APPROVED bundle other test files inserted most recently):
+teacher profile -> `POST /api/v1/classrooms` -> `POST /api/v1/classrooms/{id}/invites` ->
+learner profile -> `POST /api/v1/classroom-invites/resolve` ->
+`POST /api/v1/classroom-memberships/requests` ->
+`POST /api/v1/classroom-memberships/{id}/approve` -> `POST /api/v1/b/sessions` ->
+`POST /api/v1/b/sessions/{id}/opportunities` ===> asserted **201, not 409**. Run for both
+GRADE_2 and GRADE_3, each asserting directly against the database that `Learner.grade` is NULL
+before approval and 2 / 3 after. Plus: rejection leaves grade NULL; the replay/double-approval
+idempotency pair above; and a guard that the mapping dict is exactly `{"GRADE_2": 2,
+"GRADE_3": 3}` and raises `KeyError` on an unknown classroom grade.
+
+**Verification** (real Postgres 16 via `compose.yaml`, not sqlite; the `api` image was rebuilt
+because it bakes `app/` and `tests/` in rather than bind-mounting them):
+- `docker compose up -d --build`; `docker compose exec api alembic upgrade head` — head unchanged
+  at `20260728_0003`.
+- `docker compose exec api pytest -q tests/test_learner_activation_path.py` — **5 passed,
+  0 failed** in 6.31s.
+- `docker compose exec api pytest -q` (FULL suite) — **241 passed, 0 failed, 0 skipped** in
+  145.59s, up from 236 (the 5 new tests), with no pre-existing test modified.
+- `cd frontend && npm.cmd run test:contract` — **4/4 passed**, unregressed.
+
+**Files touched:** `backend/app/application/classroom_membership.py`,
+`backend/tests/test_learner_activation_path.py` (new), `backend/buildLog.md`. No frontend file
+touched; no migration, DTO, contract artefact, or route touched.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state.
+
+## 2026-07-29 — BE-G2: re-runnable dev fixture — Grade-2 learner with an approved classroom
+
+**Why.** The project is building the Component B learner experience screen by screen — design UI
+-> integrate the real backend API -> test end-to-end -> next screen. FE-1b (the teacher app) is
+deliberately postponed, so nothing in the product can perform the teacher half of onboarding.
+`backend/scripts/dev_fixture_learner.py` fills only that gap: it drives the real backend API
+(never the database directly) as two real Supabase-authenticated principals — a teacher and a
+learner — until the learner has an APPROVED Grade-2 classroom membership, then self-verifies that
+a question can actually be served. Depends on BE-G1 (committed `1b0b1f9`): its self-verify step
+asserting `POST .../opportunities` returns 201 is only true with BE-G1's grade-assignment fix in
+place. Delete `backend/scripts/` (and its guard test) the day FE-1b lands.
+
+**No service-role key — the decision, and why it's now possible.** The environment was verified
+before writing any code: Supabase project `hliyqkmmghheoxvdxjbv` has email confirmation OFF and
+signups ENABLED, so a plain `POST /auth/v1/signup` with the ordinary PUBLISHABLE key (the same
+`EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` the Expo app ships with — not a secret) returns a usable
+session immediately; confirmed live with curl before writing the script. On a re-run signup
+returns `422 user_already_exists`, and the script falls back to
+`POST /auth/v1/token?grant_type=password` — that fallback is the entire idempotency mechanism for
+identity. This removes the Admin API and any service-role key from the design entirely; the new
+isolation guard (below) asserts the string `"service_role"` never appears in the script.
+Confirmed live: `GET /api/v1/me` returns `200 {"user_id": "...", "email": null}` for both fixture
+identities against the real running container — `AuthenticatedPrincipal.email` is null because
+Supabase's confirmation-off JWTs never set the top-level `email_verified` / `email_confirmed_at`
+claims `app/infrastructure/auth.py` checks (only nested `user_metadata.email_verified`, which the
+backend correctly does not trust) — the script and its docs assume email is always null.
+
+**Mechanism — HTTP-driven, zero direct database writes.** `dev_fixture_learner.py` never imports
+a SQL toolkit or Postgres driver, never reads the backend's database connection string, and never
+opens a database connection; every state change goes through the real FastAPI routes, in order:
+teacher profile -> classroom (`FIXTURE Grade 2`, `GRADE_2`) -> invite -> learner profile -> resolve
+invite -> membership request -> (teacher) list membership requests -> approve. Driving the real
+endpoints gets `ProvenanceMixin`'s 18 columns, the `ck_*_actor_exactly_one` checks, the
+`classroom_invite_id` FK, the APPROVED-requires-`decided_at_utc`-and-`decided_by_user_id` check,
+and `uq_classroom_memberships_one_approved_per_learner` all satisfied for free, and makes the
+script double as an end-to-end test of the shipped onboarding flow. Every state-changing call
+supplies its own fresh `Idempotency-Key`; there is no shared/reused key anywhere. Lives at
+`backend/scripts/`, outside `app/` — every architecture guard roots its filesystem scan at
+`Path("app")` (`test_be2_architecture_guards.py:161,253,345`,
+`test_be3_live_engine_boundary.py:78,126,147`), so it is invisible to all of them without a
+route ever needing to exist (a route would have broken the exact-route-set assertion, the
+no-"debug"/"inject"/"/test"-in-path assertion, and forced a contract re-freeze).
+
+**Fixture identities.** `dev-fixture-teacher@example.com` (created by this batch) and
+`dev-fixture-learner@example.com` (pre-existing project user, id
+`3df49ef8-9792-4ec4-88b5-280312f45b1b`, reused rather than duplicated), both
+`Fixture-Dev-Pass-2026!`. `example.com` is IANA-reserved and can never route mail.
+
+**Safety rails.** Refuses to run unless `APP_ENV != "production"` (read from `backend/.env`, or
+the process environment) AND `--test-fixture-only` is passed explicitly. This is the first
+env-gated behavior in the backend codebase; it lives entirely outside `app/`, so "zero env-gated
+behavior inside `app/`" still holds. No access token is ever logged. No new variable was added to
+`backend/.env` or `.env.example` — `backend/.env` already existed, is gitignored, and was
+confirmed working (a real ES256 Supabase token already returned `200` from `GET /api/v1/me`
+against the running container) before this batch touched anything; `--api-base` is a script-only
+CLI flag (default `http://localhost:8000`, override via `--api-base` or `DEV_FIXTURE_API_BASE`),
+never backend configuration.
+
+**Re-run / reset behavior — verified live, not simulated:**
+- Ran the script fresh, then immediately again: second run exited 0, reused the same identities,
+  same classroom, same membership (`"Classroom membership already APPROVED; skipping
+  invite/request/approve."`), no duplicates of either.
+- Started a session via `--keep-session`, re-ran with `--keep-session` again: printed the exact
+  same `session_id` and `item_opportunity_id` both times, proving the session survived rather
+  than being reset (`start_session` is already idempotent-by-state; `opportunities` reissued the
+  same still-open opportunity).
+- Ran again without `--keep-session`: printed `"Abandoned stale active session ..."` naming that
+  same session, then self-verified against a fresh one — confirms step 4's reset actually fires
+  when a session is left active and is skippable on request.
+
+**Two honest limitations found during live verification, documented in
+`backend/scripts/README.md`:**
+1. **`source_class`.** Rows created through HTTP carry whatever `source_class` the routes write
+   (`REAL`), which cannot be overridden by an HTTP client. Mitigated only by naming (`example.com`,
+   `FIXTURE` prefixes) and the operational rule that this script never targets anything but a
+   local dev database.
+2. **Running the full backend test suite wipes this fixture's data — discovered, not
+   theorized.** `docker compose exec api pytest -q` and the running API share one Postgres
+   database. `test_be2_persistence.py` downgrades all the way to the base revision
+   (`20260722_0001`) and back up to exercise migration reversibility, which drops every table any
+   later migration created — `app_users`, `b_learners`, `classrooms`, `classroom_memberships`,
+   all of it — then recreates them empty. This was caught live during verification: a run that
+   had previously found "already APPROVED" instead had to redo the whole
+   invite/request/approve sequence immediately after a full-suite run. Not a bug in this script —
+   the script's own idempotency absorbs it completely — but worth knowing before assuming
+   something is broken. Separately (and unrelated to BE-G1 or this batch), backend tests also
+   insert their own throwaway `RuntimeBundleRecord` rows with newer timestamps than the one
+   bundle version (`be3b-test-fixture-1.0`) opportunity selection can actually serve, which can
+   shadow it via `find_current_approved_published`'s most-recent-wins tie-break and produce a 409
+   on `.../opportunities` that looks identical to a BE-G1 regression but isn't; there is no API
+   route to publish/approve a bundle (out of scope here), so recovering from this requires an
+   operator to touch the database directly — this script deliberately cannot, and does not, do
+   that itself. The script's own 409 diagnostic now names both possible causes rather than
+   assuming BE-G1.
+
+**New guard** — `backend/tests/test_dev_fixture_isolation.py` (new, 3 tests, deleted together
+with `backend/scripts/` when FE-1b lands): no file under `app/` references `"scripts"`; importing
+the script module adds no path to `app.openapi()["paths"]` (import is side-effect-free — all
+network activity is behind `main()`, guarded by `if __name__ == "__main__"`); the script's own
+source contains none of `"sqlalchemy"`, `"asyncpg"`, `"database_url"`, `"service_role"` —
+provably cannot write rows directly and provably uses no elevated credential. (The script's own
+docstring had to be reworded once during verification — it originally named the very things it
+promises never to import, which is a literal substring match the guard correctly failed on.)
+
+**Infrastructure needed for the guard to run in the built image.** `backend/Dockerfile` now also
+`COPY --chown=10001:10001 scripts ./scripts`, alongside the existing `app`/`tests`/`contract`
+copies — otherwise the guard test's `Path("scripts/dev_fixture_learner.py").read_text(...)` has
+nothing to read inside the container. Same precedent as BE5a's `contract/` COPY line.
+
+**Verification** (real Postgres 16 via `compose.yaml`; auth is live, not mocked):
+- `docker compose up -d --build` (picks up the `scripts/` COPY line).
+- `docker compose exec api pytest -q tests/test_dev_fixture_isolation.py` — **3 passed**.
+- `python scripts/dev_fixture_learner.py --test-fixture-only` (from `backend/`, real Supabase +
+  real running API) — first run: **exit 0**, printed credentials + a real grouped join code
+  (`XXXX-XXXX`). Immediate second run: **exit 0**, `"already APPROVED"`, no duplicates.
+  `--keep-session` run followed by a second `--keep-session` run: **exit 0** both times, identical
+  session/opportunity IDs, confirming the session survived. Final run without `--keep-session`:
+  **exit 0**, stale session named and abandoned, fresh self-verify session opened and cleaned up.
+  Also confirmed the safety rail: running with no flags exits 1 with a clear refusal message.
+- `docker compose exec api pytest -q` (full suite, run once during this batch, before the final
+  fixture-script polish above) — **244 passed, 0 failed, 0 skipped** in 138.28s (up from 241 —
+  the 3 new guard tests), no pre-existing test modified. As documented above, this run wipes the
+  fixture's provisioned data as a side effect of `test_be2_persistence.py`'s migration-reversibility
+  cycle; the fixture script was re-run afterward and confirmed clean (exit 0).
+- **Not run: signing into the Expo app.** This environment has no device/emulator/Expo runtime
+  available to drive that check. Both fixture identities are confirmed live end-to-end against
+  the real backend (`GET /api/v1/me` returns `200` for both, the full onboarding chain completes,
+  and a real question is served), so the credentials printed by the script are real and ready —
+  but the actual "open the app, sign in, reach `(learner)/home`" step needs to be done by hand.
+
+**Files touched:** `backend/scripts/dev_fixture_learner.py` (new), `backend/scripts/README.md`
+(new), `backend/tests/test_dev_fixture_isolation.py` (new), `backend/Dockerfile` (added the
+`scripts/` COPY line), `backend/buildLog.md`. No file under `backend/app/`, no migration, no DTO,
+no contract artefact, no route, and no frontend file touched. `backend/.env` and
+`backend/.env.example` were read but not modified.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state. One environment note:
+Docker Desktop was already running from the BE-G1 session; no restart was needed for this batch.
+
+## 2026-07-29 — FE-0a: frontend error-envelope shape correction
+
+**Why.** `isApiErrorEnvelope` (`frontend/src/api/runtime-validation.ts`) validated a flat
+`{code, message, request_id, retryable, details}` shape that has never matched what the backend
+actually emits. The real shape, `app/core/errors.py`'s `ErrorResponse`/`ErrorBody`, is nested:
+`{schema_version, error: {code, message, request_id, details?}}`, and carries no `retryable`
+field at all. Because the check always returned `false` for a real error body, `envelope` was
+never populated on `ApiClientError` anywhere in the app, and `client.ts`'s
+`envelope?.request_id` was always `undefined` — every error's surfaced request id has silently
+been falling back to the `x-request-id` response header the whole time. That fallback path
+happened to produce a plausible-looking request id, which is exactly why the defect was
+invisible: nothing crashed, nothing looked wrong, the field was just quietly always sourced from
+the wrong place. It also meant `error.code` (`CONFLICT`, `AUTHENTICATION_REQUIRED`, …) was
+unreachable to the client, leaving FE-3's future error handling with nothing to branch on.
+
+**Correction to the plan's own diagnosis.** The bounded-batch prompt for this work additionally
+undernoted `ApiFieldIssue = {field: string; code: string}`: `errors.py`'s validation handler
+(lines 111–114) actually emits `[{location: string[], type: string}]` for 422s, and
+`ErrorBody.details` is typed `dict[str, Any] | list[dict[str, Any]] | None` server-side — so
+`details` can be an object, not only an array, and its inner shape is handler-specific, not the
+`{field, code}` pair the old type assumed. Confirmed no other file imported `ApiFieldIssue`
+before deleting it.
+
+**Changes:**
+- `frontend/src/api/contracts.ts` — replaced `ApiErrorEnvelope` with the nested
+  `{schema_version, error: {code, message, request_id, details?}}` shape, `details` typed as
+  `Record<string, unknown> | Record<string, unknown>[]` (deliberately not narrowed further — see
+  the type's own comment). Deleted `ApiFieldIssue` (dead after the shape correction, confirmed
+  unreferenced elsewhere).
+- `frontend/src/api/runtime-validation.ts` — rewrote `isApiErrorEnvelope` to validate the nested
+  shape: non-empty `schema_version`, `error` a record, `error.code`/`error.message`/
+  `error.request_id` all non-empty strings, `error.details` (when present) either a record or an
+  array of records, fails closed on anything else. Does not pin `schema_version === '1.0'`, so a
+  future `1.1` that still parses is not rejected into `invalid-response`.
+- `frontend/src/api/client.ts` — one-line fix: `envelope?.request_id` ->
+  `envelope?.error.request_id` at the top of `mapHttpError`. `mapHttpError`'s status->kind
+  mapping and `ApiClientError`'s constructor signature were left untouched; branching on
+  `error.code` is FE-3's scope, not this batch's.
+- `frontend/src/api/__tests__/error-envelope.test.ts` (new, picked up by the existing
+  `test:contract` glob) — 10 cases: accepts a real captured 409 envelope, accepts a real 422 with
+  array-form `details`, accepts object-form `details`, rejects the old flat shape (the regression
+  guard proper), rejects an empty `error` object, rejects a missing `schema_version`, rejects
+  `details` as a bare string, rejects a `details` array containing non-record elements, rejects a
+  `null` `error` field, and — driven through `requestJson` with a stubbed `fetch` rather than by
+  exporting `mapHttpError` — asserts that a stubbed 409 response's surfaced `requestId` comes from
+  `error.request_id` in the body and not the `x-request-id` header.
+
+**Out of scope, untouched:** nothing under `backend/`; no contract re-freeze (this type is
+hand-written against observed behaviour, not generated — `openapi.v1.json`'s checksum did not
+move); no new dependency; `ApiClientError`'s constructor signature; FE-0b/FE-0c work.
+
+**Verification (all from `frontend/`):**
+- `npx tsc --noEmit` — clean, no errors.
+- `npm run lint` — clean, no errors.
+- `npm run test:contract` — **14 passed, 0 failed** (4 pre-existing tests unregressed, 10 new).
+- Live check against the real running backend (`docker compose up -d`, already running) and the
+  BE-G2 fixture (`python scripts/dev_fixture_learner.py --test-fixture-only --keep-session`,
+  confirmed idempotent — fixture already provisioned and APPROVED): signed in as
+  `dev-fixture-teacher@example.com` via Supabase password grant and issued
+  `POST /api/v1/classrooms` for the fixture's already-existing `FIXTURE Grade 2` classroom name,
+  which the backend correctly rejects as a duplicate. Observed envelope, verbatim:
+  `{"schema_version":"1.0","error":{"code":"CONFLICT","message":"The request conflicts with the
+  current resource state.","request_id":"53a1214f-d5b6-42f1-affc-88238ffbd927"}}` — confirms the
+  corrected shape matches the live backend exactly. (`POST /api/v1/b/sessions` twice with
+  different idempotency keys, as originally suggested, does not actually 409 — session start is
+  idempotent-by-state per `dev_fixture_learner.py`'s own docstring, and returned the same active
+  session both times; the duplicate-classroom-name conflict was used instead as it reliably
+  exercises the same 409 handler path.)
+
+**Files touched:** `frontend/src/api/contracts.ts`, `frontend/src/api/runtime-validation.ts`,
+`frontend/src/api/client.ts`, `frontend/src/api/__tests__/error-envelope.test.ts` (new),
+`backend/buildLog.md`. No file under `backend/app/` touched.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state.
+
+## 2026-07-29 — FE-0b: pending-command union + active-session-id readers
+
+**Why.** `session-command-store.ts` persisted a `start_session` pending command and an active
+session id to local storage, but nothing ever read the active session id back
+(`saveActiveSessionId` had no counterpart), and the pending-command type only modeled
+`start_session` — the other three learner-write endpoints (`submit_response`, `request_assist`,
+`complete_opportunity`) had no offline-recovery representation at all, which blocks FE-2/FE-3's
+resume-after-relaunch flow. This batch adds the missing readers and generalizes the pending-command
+type to a discriminated union over `kind`, without touching any screen.
+
+**Two findings confirmed during this batch, both load-bearing for the design below:**
+
+1. **Start-session idempotency (carried over from FE-0a, reconfirmed here).** `start_session`
+   (`app/application/b_session_lifecycle.py`'s `start_session`) is idempotent-by-*state*, not only
+   by idempotency key: `find_starting_or_active_for_learner` returns the learner's existing
+   starting-or-active session and the route responds `201` with it again, rather than ever `409`ing
+   on a second call. This is why `PendingStartSessionCommand` needs no request body beyond the
+   idempotency key — replay safety for `start_session` comes from the one-active-session-per-learner
+   constraint, not from a stored request body — while `submit_response` has no equivalent recovery
+   path: its idempotency key is fingerprinted against the exact request body
+   (`body_fingerprint`, `app/application/attempt_submission.py:194`), so a replay with a
+   reconstructed body that differs by even one field (in particular `client_elapsed_ms`, which is
+   unrecoverable after a relaunch) fails the fingerprint check. This is the reason
+   `PendingSubmitResponseCommand.body` is required, not optional, and is persisted verbatim rather
+   than recomputed at replay time.
+2. **The "starting" state asymmetry.** The persistence layer's session-state check constraint
+   (`app/infrastructure/persistence_models.py:35`) allows seven states —
+   `starting, active, completing, completed, abandoned, expired, technical_failed` — but the
+   public API's `SessionCommandResponse.state` (`app/domain/b_session.py:21`) is the narrower
+   `Literal["active", "completed", "abandoned"]`; `starting`/`completing`/`expired`/
+   `technical_failed` never cross the contract boundary. Separately, and unrelated to the server,
+   `session-preparation-screen.tsx`'s own `PreparationPhase` has a `starting-session` value that is
+   purely a client-side UI phase — it is never persisted and never maps to any server state.
+   Confirms the design choice below: this store's pending-command union is discriminated on
+   `kind` (which endpoint is being retried), never on session/opportunity *state* — state values on
+   both sides are richer, narrower, and differently-shaped than any client-local persistence should
+   assume.
+
+**Changes:**
+- `frontend/src/api/contracts.ts` — `PendingStartSessionCommand` (single type) replaced by a
+  `PendingSessionCommand` discriminated union over `kind`: `start_session` (unchanged fields, now
+  named `PendingStartSessionCommandBase`), `submit_response` (`sessionId`, `itemOpportunityId`,
+  required `body: {submitted_value: string; client_elapsed_ms: number}`), `request_assist`
+  (`sessionId`, `itemOpportunityId`), `complete_opportunity` (`sessionId`, `itemOpportunityId`).
+  Every variant still carries its own `idempotencyKey`/`createdAt`. Endpoint paths verified against
+  `app/api/routes/b_session.py`'s live route table. `PendingStartSessionCommand` is kept exported as
+  a type alias of the `start_session` member so `session-preparation-screen.tsx` (out of scope for
+  this batch) keeps compiling and behaving identically, untouched. No TTL/staleness expiry was added
+  on `createdAt` — deliberately out of scope; discarding a pending command after N minutes is a
+  policy decision about whether a child's answer still counts, not an engineering default to invent.
+- `frontend/src/api/runtime-validation.ts` — one validator per union variant
+  (`isPendingSubmitResponseCommand`, `isPendingRequestAssistCommand`,
+  `isPendingCompleteOpportunityCommand`) plus `isPendingSessionCommand`, the union validator, which
+  discriminates via `Object.prototype.hasOwnProperty.call(value, 'kind')` then a `switch` — never a
+  bare property read on unparsed JSON. `isPendingSubmitResponseCommand` checks
+  `body.submitted_value` is *a string* only (not non-empty: `""` may be a legitimate submission for
+  the server to judge, and rejecting it client-side would be the client deciding correctness it
+  isn't entitled to decide) and `body.client_elapsed_ms` is a finite, non-negative number via a new
+  `isFiniteNonNegativeNumber` helper (rejects `Infinity`/`NaN`/negative). `isPendingStartSessionCommand`
+  is unchanged.
+- `frontend/src/features/session/session-command-store.ts` —
+  - **Part 1 (new readers).** Added `loadActiveSessionId` and `clearActiveSessionId`.
+    `loadActiveSessionId` mirrors the existing discard discipline (was `loadPendingStartCommand`
+    lines 39–43, now `loadPendingCommand`): validates the stored value is a non-empty string,
+    discards and returns `null` otherwise. No UUID-format check was added — the server owns id
+    format, and asserting one client-side would be inventing a rule the server never promised.
+  - **Part 2 (generalized store).** `loadPendingCommand`/`savePendingCommand`/`clearPendingCommand`
+    now operate on the `PendingSessionCommand` union (same storage key, same discard-invalid
+    behaviour as before — nothing changed about *when* data is discarded, only what shape it
+    validates against). `loadPendingStartCommand`/`savePendingStartCommand`/
+    `clearPendingStartCommand` are kept as thin start_session-only wrappers over the generalized
+    functions so the prep screen's existing call sites and behavior are unaffected.
+- `frontend/src/api/__tests__/pending-session-command.test.ts` (new, picked up by the existing
+  `test:contract` glob) — 20 cases: per-variant validator accept/reject cases (including the
+  empty-string-`submitted_value`-is-valid case and the `Infinity`/negative `client_elapsed_ms`
+  rejection cases), `isPendingSessionCommand` failing closed on an unknown or missing `kind`, a
+  round-trip test per union variant against the store's web `Map` backend, a corrupt-payload
+  discard test per variant, a byte-identical save→load assertion for `submit_response.body`
+  specifically (since that is exactly what the backend's fingerprint check depends on), and an
+  `loadActiveSessionId` round-trip plus corrupt-(empty-string)-value discard case.
+
+**Test-infrastructure problem found and worked around, confined to the new test file only.**
+`session-command-store.ts` is the first module `test:contract` has ever needed to load that
+transitively requires `react-native` (for `Platform.OS`) and `expo-secure-store`. Both fail under
+the plain esbuild-based `tsx` test runner this script uses: `react-native`'s entry file uses Flow's
+`import typeof` syntax, which esbuild rejects outright, and there is no jest/React-Native test
+preset wired into `test:contract` (adding one is out of scope for this batch). Because `tsx`
+compiles this whole test file — and everything it pulls in — to CommonJS (`frontend/package.json`
+has no `"type": "module"`), an ESM `node:module` `register()` loader hook was tried first and
+does not work: `register()` only intercepts the ESM loader pipeline, never CJS `require()` calls.
+The working fix, contained entirely inside the new test file: `Module.prototype.require` is
+monkeypatched to intercept the two bare specifiers and return stub exports (`{Platform: {OS:
+'web'}}`, and no-op async stubs for the three `SecureStore` functions plus its
+`WHEN_UNLOCKED_THIS_DEVICE_ONLY` constant) before `session-command-store` is required. This forces
+the store's own `Platform.OS === 'web'` branch — which is exactly the "web Map backend" the batch's
+verification section asks the round-trip tests to exercise — and leaves every other test file's
+module registry untouched, since `node --test` isolates each test file into its own
+worker/process.
+
+**Out of scope, untouched:** no API client functions (FE-0c); no screen changes —
+`session-preparation-screen.tsx` was read to confirm `PendingStartSessionCommand` and its four
+call sites (`:56-63`, `:145-146`) still typecheck unmodified, but not edited; no new dependency; no
+contract re-freeze (these are local persistence types, not server DTOs — `openapi.v1.json`'s
+checksum did not move); no TTL/staleness policy on `createdAt`.
+
+**Verification (all from `frontend/`):**
+- `npx tsc --noEmit` — clean, no errors (confirms `session-preparation-screen.tsx` still compiles
+  unmodified against the new union-aliased type).
+- `npm run lint` — clean, no errors.
+- `npm run test:contract` — **34 passed, 0 failed** (14 pre-existing tests unregressed, 20 new).
+
+**Files touched:** `frontend/src/api/contracts.ts`, `frontend/src/api/runtime-validation.ts`,
+`frontend/src/features/session/session-command-store.ts`,
+`frontend/src/api/__tests__/pending-session-command.test.ts` (new), `backend/buildLog.md`. No file
+under `backend/app/` touched, no screen touched.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state.
+
+## 2026-07-29 — FE-0c: the six B-session API client functions + validators
+
+**Why.** `component-b-api.ts` only wrapped two of the eight B-session-lifecycle endpoints
+(`checkReadiness`, `startSession`); nothing wrapped opportunity selection, response submission,
+hint requests, opportunity completion, active-session recovery, or session-standing. All six
+response types (`ActiveSessionResponse`, `OpportunityPresentationResponse`, `AttemptResponse`,
+`HintRequestResponse`, `OpportunityAdvanceResponse`, `SessionStandingResponse`) already existed in
+`src/api/generated/openapi-types.ts` from the frozen contract — this batch only wires client
+functions and runtime validators for them; no contract re-freeze, no regeneration.
+
+**Four corrections found and confirmed live against the domain models before writing any
+validator, each worth recording because it either contradicts an existing in-code comment or
+would have been an easy place to accidentally reintroduce drift:**
+
+1. **`selectOpportunity` deliberately takes no idempotency key and no body — confirmed against
+   `app/application/opportunity_selection.py`.** `OpportunitySelectionService.select_next_opportunity`
+   checks `ItemOpportunityRepository.find_open_for_session` first; when an OPEN opportunity already
+   exists it calls `reissue_presentation_for_open_opportunity`, which issues a fresh presentation
+   token for the *same* opportunity rather than creating a new one. This — not an omission — is
+   what makes `selectOpportunity` the crash-recovery path: calling it again after an app restart or
+   a dropped response returns the same open question instead of minting a second one. Documented
+   inline at the call site so it doesn't read as a missing idempotency key to a future editor.
+2. **`submitResponse`'s body constraints mirror `SubmitResponseRequest`
+   (`app/domain/b_attempt.py`) exactly, and are explicitly not answer validation.**
+   `submitted_value: str = Field(min_length=1, max_length=255)` and
+   `client_elapsed_ms: int | None = Field(default=None, ge=0, le=3_600_000)`. The client now
+   rejects an out-of-range `submitted_value` before the request leaves the device (the server would
+   422 it anyway) and clamps `client_elapsed_ms` into `[0, 3_600_000]` rather than rejecting it
+   outright, since it's TELEMETRY ONLY per the server's own docstring — never read for correctness
+   or BKT. Both are commented as mirroring the server's own constraint, not the client deciding
+   whether an answer is right.
+3. **`response_format` must not be validated against a hardcoded list of known formats.** The
+   registry that owns the known-format set belongs to the presentation-renderer work (Batch 8, not
+   yet built). `isOpportunityPresentationResponse`/`isOpportunityPresentationFields` accept any
+   non-empty string for `response_format` — a second hardcoded list here would just be a second
+   place for the set of known formats to silently drift out of sync with the registry's own list.
+   Verified with a test asserting an unrecognized format string is still accepted.
+4. **The `skill_id`/`grade` correction — contradicts an existing in-code comment that this batch
+   does not touch.** `session-preparation-screen.tsx`'s `lessonCard` section carries the comment
+   "Grade badge removed: no `grade` field exists anywhere reachable from the frozen v1 contract
+   (AuthenticatedPrincipal/LearnerProfileResponse); do not invent one." That was true of the
+   identity/profile endpoints alone, but as of this batch it is no longer true of the contract as a
+   whole: `OpportunityPresentationFields`/`OpportunityPresentationResponse`
+   (`app/domain/b_opportunity.py`) carry both `grade: int` and `skill_id: str`, reachable via the
+   new `selectOpportunity`/`completeOpportunity` client functions. The comment should be amended
+   (or the grade badge re-added, sourced from the opportunity response instead of the principal) in
+   whichever future batch actually consumes `selectOpportunity` from a screen — not this one, which
+   touches no screen. Left as-is deliberately; recorded here so it isn't rediscovered from scratch.
+
+**Also carried forward, not new to this batch:** every `*_id` field across all six validators is
+treated as an opaque non-empty string — no UUID-format regex anywhere, consistent with the
+existing rule that the server alone owns id format (see FE-0b's `loadActiveSessionId`, which
+established the same rule for the locally-persisted active session id).
+
+**Changes:**
+- `frontend/src/api/component-b-api.ts` — six new `ComponentBApi` methods, all following
+  `startSession`'s existing `requestJson` shape: `getActiveSession` (`GET .../active`, no
+  idempotency key), `selectOpportunity` (`POST .../opportunities`, no idempotency key, no body —
+  see correction 1), `submitResponse` (`POST .../responses`, idempotency key + normalized body —
+  see correction 2), `requestAssist` (`POST .../assists`, idempotency key, no body),
+  `completeOpportunity` (`POST .../complete`, idempotency key, no body), `getSessionSummary`
+  (`GET .../summary`, no idempotency key). All six are typed optional on `ComponentBApi` — see next
+  point — and `createFixtureApi` was deliberately **not** extended to cover them: it is a data
+  fixture for the prep screen only (`checkReadiness`/`startSession`), and growing it into a fake
+  session engine is how it stops being an inert, easily-reasoned-about fixture.
+- `frontend/src/api/runtime-validation.ts` — six new validators following `isSessionCommandResponse`'s
+  pattern, all verified field-by-field against the frozen `openapi.v1.json`'s `required` arrays:
+  `isActiveSessionResponse` (recurses into a new private `isSessionFields` helper when `session`
+  is non-null), `isOpportunityPresentationFields`/`isOpportunityPresentationResponse` (the former is
+  exported so `isOpportunityAdvanceResponse` can recurse into `next_opportunity` without
+  re-deriving the field list — see correction 3 on `response_format`), `isAttemptResponse`
+  (enforces `response_matched === null` iff `event_kind === 'TIMEOUT'` in both directions — anything
+  else fails closed rather than the client guessing which field to trust), `isHintRequestResponse`,
+  `isOpportunityAdvanceResponse`, `isSessionStandingResponse`.
+
+**A type-level consequence of not extending the fixture:** since `createFixtureApi`'s returned
+object implements only `checkReadiness`/`startSession`, the six new `ComponentBApi` methods had to
+be typed optional (`getActiveSession?:`, etc.) rather than required — otherwise the fixture branch
+would fail to typecheck against a `ComponentBApi` that mandates all eight methods. This is a
+deliberate, load-bearing consequence of the "don't extend the fixture" instruction, not an
+oversight; any future caller of these six methods through a fixture-eligible `ComponentBApi` will
+need its own explicit `undefined` handling until (if ever) the fixture grows real session-engine
+behavior.
+
+**Explicitly out of scope, untouched:** no screen changes, no renderer logic (Batch 8), no
+timeout/hint/advance UI, no new dependency, no `.env` change, no contract re-freeze (`openapi.v1.json`'s
+checksum did not move — confirmed by the pre-existing checksum test in `contract-freeze.test.ts`
+staying green).
+
+**Verification (all from `frontend/`):**
+- `npx tsc --noEmit` — clean, no errors.
+- `npm run lint` — clean, no errors.
+- `npm run test:contract` — **51 passed, 0 failed** (34 pre-existing tests unregressed, 17 new).
+  New test file `src/api/__tests__/component-b-session-validators.test.ts`: per validator, one
+  accept case built from the frozen schema's own `required` array plus one reject case per
+  required field dropped (mirroring `contract-freeze.test.ts`'s `isHealthReadyResponse` pattern),
+  plus the specifically-requested cases — the TIMEOUT/null invariant asserted in both failing
+  directions, `presented_choices: []` accepted, an unrecognized `response_format` string still
+  accepted, and `next_opportunity` recursion exercised both with a valid nested presentation and a
+  malformed one. No module stubbing was needed for this file — `src/api/` has no `react-native`
+  imports (unlike FE-0b's store test), so it is a plain `node:test` file.
+
+**Files touched:** `frontend/src/api/component-b-api.ts`, `frontend/src/api/runtime-validation.ts`,
+`frontend/src/api/__tests__/component-b-session-validators.test.ts` (new), `backend/buildLog.md`.
+No file under `backend/app/` touched, no screen touched, no contract artefact touched.
+
+Left uncommitted for Yasindu. Not run: any git command that mutates state.

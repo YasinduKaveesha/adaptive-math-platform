@@ -1,35 +1,36 @@
 {
   "schema_version": "1.0",
   "component": "B",
-  "phase": "BE3_PACKAGING",
-  "recorded_at_utc": "2026-07-24T00:00:00Z",
-  "batch_scope": "Packaging and import-boundary work only. No adapter wiring, no application import, no live learner flow, no new scientific parameters. Governed by component-b-live-engine-reuse-map.json and component-b-closure-decisions.json (generator_packaging_decision.selected_strategy = MINIMAL_UPADYA_COMPONENT_B_LIVE_ENGINE_AT_BE3).",
+  "phase": "BF4_ENGINE_REBUILD",
+  "recorded_at_utc": "2026-08-08T00:00:00Z",
+  "batch_scope": "BF-4: re-pin the live-safe engine wheel to a newer Yass main commit to pull in two upstream fixes that measurement/parity review found missing from the running system — the RT-std defect (b_item_response_time_std_sec persisted as 0.0 for <2 timed responses or zero variance, rejected by the B->3 contract's PositiveTiming | None) and the B-NS07 conservation delta-in-prompt fix (upstreamed to Yass first via a dedicated PR specifically so this rebuild would not have to ship a locally-modified science file — see rebuild_provenance below). No adapter wiring changed, no new scientific parameter, no change to the trim/exclusion boundary established at BE3 — this batch only moves the pin and re-verifies everything the BE3 record below already established still holds. Original BE3 packaging scope: 'Packaging and import-boundary work only. No adapter wiring, no application import, no live learner flow, no new scientific parameters. Governed by component-b-live-engine-reuse-map.json and component-b-closure-decisions.json (generator_packaging_decision.selected_strategy = MINIMAL_UPADYA_COMPONENT_B_LIVE_ENGINE_AT_BE3).'",
   "package": {
     "distribution_name": "upadya-component-b-live-engine",
-    "version": "0.1.0+be3.0e86fdc",
+    "version": "0.1.0+bf4.09267ab",
     "distinct_from_research_distribution": "upadya-component-b-generator (the full research wheel); this package reuses neither its distribution name nor its version, per closure-decisions.json versioning_method.",
     "python_version_built_with": "3.11.15",
-    "wheel_filename": "upadya_component_b_live_engine-0.1.0+be3.0e86fdc-py3-none-any.whl",
-    "wheel_sha256": "faa5760df1f5a3874f38f8103cdaaa88a14b3190216e46ab21765eee65a70c29",
-    "wheel_repository_path": "backend/provenance/wheels/upadya_component_b_live_engine-0.1.0+be3.0e86fdc-py3-none-any.whl",
+    "wheel_filename": "upadya_component_b_live_engine-0.1.0+bf4.09267ab-py3-none-any.whl",
+    "wheel_sha256": "148d03e7fd3f7ec075ee9b97effd3955ef013cee583baf19cc90686381537d06",
+    "wheel_repository_path": "backend/provenance/wheels/upadya_component_b_live_engine-0.1.0+bf4.09267ab-py3-none-any.whl",
     "source_tree_repository_path": "backend/packaging/component_b_internal",
-    "build_command": "python -m build --wheel --no-isolation --outdir <dist> (setuptools==80.10.2, wheel==0.46.3; isolated Python 3.11.15 venv)",
-    "application_container_installation": "NOT YET WIRED — pinned as a dependency in backend requirements files only (this batch); Dockerfile/adapters are out of scope and are BE3b work. backend/.dockerignore currently excludes provenance/, packaging/, and *.whl from the Docker build context, so an actual image build cannot install this pin until BE3b updates the build context and Dockerfile COPY steps.",
-    "application_code_import": "NONE — no file under backend/app imports this package or any of its modules in this batch."
+    "build_command": "python -m build --wheel --no-isolation --outdir <dist> (setuptools==80.10.2, wheel==0.46.3, build==1.2.2.post1; built inside the exact application base image docker.io/library/python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba, not a merely-compatible local interpreter — interpreter parity is the point of a hash-pinned wheel).",
+    "application_container_installation": "WIRED since BE3b — requirements.lock installs this wheel with `pip install --require-hashes --no-deps`, and the Dockerfile COPYs it into the image at build time. This batch updates both to the new filename/hash; see requirements.lock, requirements.in, and Dockerfile.",
+    "application_code_import": "backend/app/infrastructure/live_engine/adapter.py (LiveEngineAdapter) is the sole import boundary, enforced by backend/tests/test_be3_live_engine_boundary.py and test_be2_architecture_guards.py."
   },
   "pinned_source": {
     "repository": "Yass",
     "observed_repository_path": "C:\\Users\\Yasindu\\Desktop\\ResearchProject\\Yass",
-    "git_commit_sha1": "0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b",
-    "verification_method": "git diff 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b -- Implementation_v1.0/component_b_generator Implementation_v1.0/models Implementation_v1.0/validators (read-only), plus per-file byte comparison of every verbatim-copied file in this package against `git show <commit>:<path>`.",
-    "verification_result": "The Yass working tree HEAD (648762a60a4590f714418b36dbd286569ee66c5d at verification time) had DRIFTED from the pinned commit in component_b_generator/aggregation/session.py (a 2026 change to response-time-std handling for <2 timed responses, unrelated to this closure's math). This package was built from the exact pinned-commit blob content via `git show <commit>:<path>`, not from the mutable working tree, so the drift does not affect this package. All 45 verbatim files in this package were confirmed byte-identical to their `git show 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b:<path>` blob content (see verification.verbatim_byte_identity_check below).",
+    "git_commit_sha1": "09267abfe83829168b8b4817eb4c59d10f54e311",
+    "git_commit_role": "origin/main tip at rebuild time — Merge pull request #13 (component-b-ns07-delta-in-prompt), itself on top of Merge pull request #12 (958ab06, restore of GF-1..GF-4). 75d0216 (GF-3, fixed_hidden_growth_g) and 09267ab are both confirmed ancestors of origin/main via `git merge-base --is-ancestor`, not inferred from an abbreviated hash — the repository underwent a directory flatten (Implementation_v1.0/ prefix removed) somewhere in this range, and abbreviated-SHA / prefixed-path lookups were independently found to be unreliable mid-investigation, so every path and commit used here was resolved with a full 40-character SHA and confirmed with `git cat-file -e` before being trusted.",
+    "verification_method": "git diff 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b 09267abfe83829168b8b4817eb4c59d10f54e311 -- Implementation_v1.0/component_b_generator Implementation_v1.0/models (read-only, full SHAs), plus per-file byte comparison of every verbatim-copied file in this package against `git show <commit>:<path>`.",
+    "verification_result": "Restricted to this package's two source directories, exactly 6 files differ between the previous pin (0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b, BE3) and this one: adapters/to_3.py, audits/leakage.py, pilot.py, and pipeline.py — all already on excluded_by_omission below, so GF-1's SF-038 gate and GF-3's fixed_hidden_growth_g never reach this package regardless of the rebuild; models/behaviour.py — its only change is a new `hidden_growth_ceiling` field on BTruthInitializationConfig, a class already absent from this package's trimmed copy (see trimmed_files below), so the existing trim absorbs it with zero code change, confirmed by grepping the shipped trimmed file for the class name (no match) rather than assumed; and the two files this rebuild actually re-copies verbatim: component_b_generator/aggregation/session.py (the RT-std fix, e41b641, already an ancestor of both the old and new pin) and component_b_generator/samplers/number_sense.py (the B-NS07 delta-in-prompt fix, upstreamed via PR #13 specifically for this rebuild — see rebuild_provenance below). All 45 verbatim files in this package (the list is unchanged from BE3) were re-confirmed byte-identical to their `git show 09267abfe83829168b8b4817eb4c59d10f54e311:Implementation_v1.0/<path>` blob content.",
     "cross_reference_only_not_reproduced": {
       "note": "component-b-closure-decisions.json and component-b-baseline.json record an existing 'generator_tracked_source_manifest' value (source_manifest_sha256 fd4f052e41539434ad4ff6bbb72fa01815ef750ceeb0a6d8ebc6fbc481e07e2c, tracked_file_count 82) for the FULL pinned generator tree, computed by an undocumented construction. This batch did not reproduce that exact algorithm (its precise path/newline/sort convention is not recorded anywhere in the repository) and does not assert equality with it. Source fidelity to the pinned commit was instead established directly (see verification_method above), which is a stronger guarantee than reproducing an opaque hash. This package's OWN source manifest is documented under package_source_manifest below with its construction spelled out."
     }
   },
   "package_source_manifest": {
     "algorithm": "SHA-256 of UTF-8 lines '<package-relative-posix-path>\\t<lowercase-sha256-of-file-bytes-as-shipped>\\n', one line per *.py file under backend/packaging/component_b_internal (excluding build/ and *.egg-info/), sorted by path.",
-    "sha256": "4321ebfdb7041a62be8620e857736db4146ae9eb27e78dffd1fd52f44664315f",
+    "sha256": "7fc1f8e741dcbe7d06ffd303a86cc69bd030adcb7e81e278c0f3d53fd9f1e71e",
     "file_count": 52,
     "manifest_file_repository_path": "backend/packaging/component_b_internal/SOURCE_MANIFEST.txt"
   },
@@ -48,7 +49,7 @@
   ],
   "verbatim_files_byte_identical_to_pinned_commit": {
     "count": 45,
-    "note": "Every file below is byte-identical to `git show 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b:Implementation_v1.0/<same-relative-path>`. No mathematical formula was copied-and-modified or rewritten; these files are unmodified copies.",
+    "note": "Every file below is byte-identical to `git show 09267abfe83829168b8b4817eb4c59d10f54e311:Implementation_v1.0/<same-relative-path>` (re-pinned at BF-4; was 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b at BE3). No mathematical formula was copied-and-modified or rewritten; these files are unmodified copies. The list is unchanged from BE3 — aggregation/session.py and samplers/number_sense.py were already on this list and stay on it; BF-4 only updated their bytes to match the new pin, it did not add or remove any file from this list.",
     "files": [
       "component_b_generator/__init__.py",
       "component_b_generator/catalogue/__init__.py",
@@ -104,7 +105,7 @@
     },
     {
       "path": "component_b_generator/models/behaviour.py",
-      "reason": "Retains ERROR_PATTERNS, ErrorPattern, HINT_LEVELS, _require_skill, and BOpportunityResponseSummary byte-identical to the pinned file — the only symbols the reviewed closure (behaviour.hints, aggregation.session) needs. Removed the audit-only hidden-truth and synthetic-behaviour-generation classes explicitly named in the reuse map's explicitly_prohibited_from_application list: AuditOnlyModel, BLearnerSkillTruth, BAttemptEvent, BoundedBetaSpec, BoundedNormalSpec, BTruthInitializationConfig, BInitialLearnerSkillTruth, LognormalLatencySpec, BFirstAttemptBehaviourConfig, BAttemptLoopConfig, BOpportunityAttemptResult. Verified none of the retained symbols reference any removed class."
+      "reason": "Retains ERROR_PATTERNS, ErrorPattern, HINT_LEVELS, _require_skill, and BOpportunityResponseSummary byte-identical to the pinned file — the only symbols the reviewed closure (behaviour.hints, aggregation.session) needs. Removed the audit-only hidden-truth and synthetic-behaviour-generation classes explicitly named in the reuse map's explicitly_prohibited_from_application list: AuditOnlyModel, BLearnerSkillTruth, BAttemptEvent, BoundedBetaSpec, BoundedNormalSpec, BTruthInitializationConfig, BInitialLearnerSkillTruth, LognormalLatencySpec, BFirstAttemptBehaviourConfig, BAttemptLoopConfig, BOpportunityAttemptResult. Verified none of the retained symbols reference any removed class. BF-4 re-check: the new pin's upstream file adds one field, `hidden_growth_ceiling` (GF-3), to BTruthInitializationConfig — a class already on this removal list. No code in this trimmed file changed; re-confirmed by grepping the shipped trimmed module for `BTruthInitializationConfig` and `hidden_growth_ceiling` (no match for either) and by the hidden_truth_class_absence_check re-run in verification below."
     },
     {
       "path": "component_b_generator/models/__init__.py",
@@ -154,12 +155,24 @@
     ]
   },
   "verification": {
-    "environment": "isolated venv built from C:\\tmp\\component-b-be0-py311-20260722\\python.exe (CPython 3.11.15), dependencies pydantic==2.13.4 and PyYAML==6.0.3 only",
-    "verbatim_byte_identity_check": "PASSED — all 45 verbatim files in the built package tree are byte-identical to `git show 0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b:<path>` for their pinned-commit counterpart.",
+    "environment": "docker.io/library/python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba (the exact application base image, not a merely-compatible local interpreter — no native Python 3.11.x was available on the build host), dependencies pydantic==2.13.4 and PyYAML==6.0.3 only, installed with `--no-deps` from the built wheel.",
+    "verbatim_byte_identity_check": "PASSED — all 45 verbatim files in the built package tree are byte-identical to `git show 09267abfe83829168b8b4817eb4c59d10f54e311:<path>` for their pinned-commit counterpart. The two files that changed relative to BE3 (aggregation/session.py, samplers/number_sense.py) were diffed against the new pin individually and matched with zero output before being copied in.",
     "capability_symbol_import_check": "PASSED — all functions/classes named in the 11 capability entries of component-b-live-engine-reuse-map.json import successfully from the installed wheel.",
     "prohibited_module_unreachability_check": "PASSED — importlib.import_module raises ModuleNotFoundError for component_b_generator.cohort, .cohort.builder, .behaviour.first_attempt, .behaviour.latency, .behaviour.attempt_loop, .pipeline, .pilot, .runner, .audits (and its submodules), .generation.item_opportunities.",
-    "hidden_truth_class_absence_check": "PASSED — AuditOnlyModel, BLearnerSkillTruth, BAttemptEvent, BoundedBetaSpec, BoundedNormalSpec, BTruthInitializationConfig, BInitialLearnerSkillTruth, LognormalLatencySpec, BFirstAttemptBehaviourConfig, BAttemptLoopConfig, and BOpportunityAttemptResult are absent from component_b_generator.models.behaviour in the installed wheel.",
-    "determinism_smoke_check": "PASSED — repeated calls to bkt_predict/bkt_posterior/bkt_update with identical fixed inputs returned identical outputs.",
-    "backend_test_file": "backend/tests/test_be3_live_engine_boundary.py"
+    "hidden_truth_class_absence_check": "PASSED — AuditOnlyModel, BLearnerSkillTruth, BAttemptEvent, BoundedBetaSpec, BoundedNormalSpec, BTruthInitializationConfig, BInitialLearnerSkillTruth, LognormalLatencySpec, BFirstAttemptBehaviourConfig, BAttemptLoopConfig, and BOpportunityAttemptResult are absent from component_b_generator.models.behaviour in the installed wheel — re-run specifically to confirm GF-3's new hidden_growth_ceiling field (added to BTruthInitializationConfig upstream) did not leak in through the existing trim.",
+    "determinism_smoke_check": "PASSED — bkt.update module imports cleanly from the installed wheel; full determinism proof is backend/tests/test_be4f_parity.py's adapter/generator byte-identical-output comparison, unaffected by this rebuild.",
+    "rt_std_defect_closure_check": "PASSED — called `_response_time_stats` directly from the installed wheel with a single response: returned std=None (not 0.0). Zero-variance two-response case also returned std=None; a genuine-variance two-response case returned a real positive std, confirming the guard is narrow (only n<2 or zero variance) not a blanket suppression. Mirrored by backend/tests/test_bf_estimator_parity.py::test_response_time_std_is_none_not_zero_for_a_single_observation, whose `xfail(strict=True)` marker is expected to flip to passing against this wheel — verified separately via the full backend suite, not inferred from this direct check alone.",
+    "ns07_delta_in_prompt_check": "PASSED — called `sample_conservation` directly from the installed wheel: `delta` is present in the returned prompt dict alongside `initial_count`, `transformation`, and `options`.",
+    "backend_test_file": "backend/tests/test_be3_live_engine_boundary.py, backend/tests/test_bf_estimator_parity.py"
+  },
+  "rebuild_provenance": {
+    "reason": "BF-4, following Component_B_Measurement_And_Parity_Review.md finding F1 (RT-std) and the pre-existing, inert B-NS07 delta-in-prompt fix (backend/packaging carried a local, never-upstreamed copy of this fix from an earlier batch, FE-3h Part 0). Rather than ship the local edit and downgrade the manifest's verbatim claim to '44 verbatim, 1 local', the fix was upstreamed to Yass first (PR #13, commit 69cb112, merged as 09267ab) so this rebuild could re-pin to a commit where the file is genuinely upstream and the all-45-verbatim claim stays intact.",
+    "superseded_package": {
+      "version": "0.1.0+be3.0e86fdc",
+      "wheel_filename": "upadya_component_b_live_engine-0.1.0+be3.0e86fdc-py3-none-any.whl",
+      "wheel_sha256": "faa5760df1f5a3874f38f8103cdaaa88a14b3190216e46ab21765eee65a70c29",
+      "pinned_source_commit": "0e86fdcbc0ffcdbda3d37c742e83b1d532910e2b",
+      "retention": "The BE3 wheel file is deliberately kept in backend/provenance/wheels/, not deleted. requirements.lock's --require-hashes install only pulls in what is explicitly listed, so a retained, unreferenced wheel is inert at runtime — and keeping it is what makes this historical manifest section (and the be3.0e86fdc entries still visible in buildLog1.md) verifiable rather than merely recorded. Same retention pattern already existed for upadya_component_b_generator-0.1.0+be0.0e86fdc-py3-none-any.whl, unused since BE0."
+    }
   }
 }

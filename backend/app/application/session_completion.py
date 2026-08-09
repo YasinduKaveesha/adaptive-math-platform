@@ -448,6 +448,25 @@ class SessionCompletionService:
         by_skill: dict[str, list[OpportunityResponse]] = {}
         for o in opportunity_responses:
             by_skill.setdefault(o.skill_id, []).append(o)
+        # BF-1 — the floor must come from PRIOR sessions, never this session's own sample.
+        #
+        # Before this fix, `median_rt_sec` (this session's own q=0.5) and the floor passed into
+        # `adapter.evaluate` (q=0.1) were computed from the *identical* `rt_history` list. Because
+        # a quantile function is monotonically non-decreasing in q on one fixed sample,
+        # quantile(S, 0.1) <= quantile(S, 0.5) always — so `evaluate`'s trigger condition
+        # (`median < floor`) was false for every possible input, and `TRIGGERED` was
+        # mathematically unreachable regardless of how implausibly fast a learner answered. The
+        # reviewed package's own `evaluate_guess_guard` is correct; only the caller's inputs were
+        # wrong. Mirrors the reference sequencing (`Yass/.../pipeline.py`): floor from history
+        # strictly before this session, evaluated against this session's own per-skill median.
+        #
+        # Every parameter is untouched: theta_b, floor_quantile (0.1), floor_min_obs (5),
+        # _MEDIAN_QUANTILE (0.5) and _MEDIAN_MIN_OBSERVATIONS (1) are exactly as before — this is a
+        # wiring fix, not a science change. A learner or skill with no qualifying prior history
+        # correctly yields INSUFFICIENT_EVIDENCE (no fabricated floor for a first-time learner).
+        prior_rt_history_by_skill = await ItemOpportunityRepository(session).prior_session_first_attempt_rts(
+            learner_id, session_row.session_id
+        )
         for skill_id, skill_estimate in latest_estimate_by_skill.items():
             rt_history = [
                 o.first_attempt_response_time_ms / 1000.0
@@ -462,7 +481,7 @@ class SessionCompletionService:
             guard_statuses[skill_id] = adapter.evaluate(
                 skill_estimate,
                 median_rt_sec,
-                rt_history,
+                prior_rt_history_by_skill.get(skill_id, []),
                 theta_b,
                 _ENGINEERING_BKT_CONFIG.floor_quantile,
                 _ENGINEERING_BKT_CONFIG.floor_min_obs,

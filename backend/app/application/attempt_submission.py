@@ -213,7 +213,18 @@ class AttemptSubmissionService:
         is_timeout = now >= opportunity.timeout_deadline_utc
 
         response_matched: bool | None = None
-        submitted_value: str | None = None
+        # BF-2 — persist what the learner actually submitted, even on timeout.
+        #
+        # Before this fix, `submitted_value` stayed `None` on the timeout branch: the request body
+        # was never read, so a late-but-correct answer was destroyed the moment the request
+        # completed, irrecoverably. That is now fixed, and *only* that: `response_matched` stays
+        # `None` and `event_kind` stays `"TIMEOUT"` below, exactly as before, so this attempt still
+        # contributes no BKT observation (the first-attempt gate is `attempt_index == 1 and
+        # event_kind == "RESPONSE"` — untouched). Comparing this value for correctness, or splitting
+        # "late response" from "true non-response" into separate taxonomy categories, would change
+        # what counts as a BKT observation and is a Gate B governance decision, not this fix. This
+        # is data preservation only.
+        submitted_value: str | None = body.submitted_value if is_timeout else None
         event_kind = "TIMEOUT" if is_timeout else "RESPONSE"
 
         if not is_timeout:
@@ -225,10 +236,30 @@ class AttemptSubmissionService:
 
             adapter: "LiveEngineAdapter" = LiveEngineAdapter()
             submitted_value = body.submitted_value
-            response_matched = adapter.answers_equivalent(submitted_value, task_instance.correct_answer) or any(
-                adapter.answers_equivalent(submitted_value, equivalent)
-                for equivalent in task_instance.allowed_equivalent_answers
+            accepted = (task_instance.correct_answer, *task_instance.allowed_equivalent_answers)
+            response_matched = any(
+                adapter.answers_equivalent(submitted_value, candidate) for candidate in accepted
             )
+            # BE-C2 Part B — tolerant place-value comparison, scoped to structured templates only.
+            #
+            # ``answers_equivalent`` is ``normalize_answer(a) == normalize_answer(b)``, which strips
+            # outer whitespace only. So a child typing "100+20+3" instead of "100 + 20 + 3" was
+            # marked wrong on a decomposition item, purely over spacing.
+            #
+            # SCOPE — this must not become the general comparison. On an arithmetic template whose
+            # answer is 12, a tolerant parse would start accepting "10+2", i.e. accepting a
+            # restatement of the problem as its answer. The gate is
+            # ``allowed_equivalent_answers``: ``answers.registry.allowed_equivalent_answers``
+            # returns a non-empty tuple exactly for the structured place-value templates and an
+            # empty one for every other template, so a non-empty list here *is* the "this template
+            # admits equivalent written forms" signal. That is deliberately used instead of
+            # importing the package's private ``_STRUCTURED_EQUIVALENCE_TEMPLATES``: no duplicated
+            # template list in the application layer means no list to drift.
+            if not response_matched and task_instance.allowed_equivalent_answers:
+                response_matched = any(
+                    adapter.structured_forms_equivalent(submitted_value, candidate)
+                    for candidate in accepted
+                )
 
         attempt_id = uuid4()
         attempt_record = AttemptRecord(

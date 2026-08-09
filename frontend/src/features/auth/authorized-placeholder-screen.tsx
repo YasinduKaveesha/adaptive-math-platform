@@ -9,7 +9,7 @@ import { colors, radius, spacing } from '@/src/theme/tokens';
 export function AuthorizedPlaceholderScreen() {
   const palette = colors;
   const { me, profileName, signOut } = useAuth();
-  const displayName = me?.learner?.display_name?.trim() || profileName;
+  const displayName = me?.learnerProfile?.name.trim() || profileName;
 
   return (
     <ScreenShell centered>

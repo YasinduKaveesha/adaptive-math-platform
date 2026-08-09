@@ -195,6 +195,7 @@ def select_candidate(
     bkt_config: BktConfig,
     grade: int,
     mastery: Mapping[str, float],
+    sessions_since_practice: Mapping[str, int] | None = None,
 ) -> SelectionResult:
     """Pure, side-effect-free core: candidate build -> hard gates -> features -> score -> select.
 
@@ -202,9 +203,28 @@ def select_candidate(
     not depend on which physical opportunity row it will end up attached to. Called once by the
     persisting service below, and called twice directly by the determinism test with identical
     arguments to prove byte-identical output.
+
+    ``sessions_since_practice`` is supplied by the caller (which has the database session) precisely
+    so this function can stay pure — see the history note below.
     """
     supported_template_ids = adapter.supported_template_ids()
-    history = {skill: None for skill in catalogue.skills}
+    # BE-P2 defect fix — spacing_due was inert.
+    #
+    # This line used to be `history = {skill: None for skill in catalogue.skills}`: a fresh all-None
+    # mapping rebuilt on EVERY selection, never populated from practice history. Since
+    # `sequencing.features.compute_features` maps a `None` entry to `spacing_due = 1.0`, every
+    # candidate scored a constant 1.0 on spacing forever — so the approved formula's 20% spacing
+    # weight added the same 0.20 to every candidate and could never differentiate anything. A skill
+    # practised five times running was exactly as "due" as one never practised.
+    #
+    # Only the WIRING changed. `SPACING_DUE_SATURATION_SESSIONS`, the 0.50/0.30/0.20 weights,
+    # mastery_gap's formula and every BKT parameter are untouched — they were never the defect.
+    # A caller that supplies nothing still gets the previous behaviour, which keeps the pure
+    # determinism test callable without a database.
+    history: dict[str, int | None] = {skill: None for skill in catalogue.skills}
+    for skill_id, gap in (sessions_since_practice or {}).items():
+        if skill_id in history:
+            history[skill_id] = gap
 
     scored: list[ScoredCandidate] = []
     for template in catalogue.templates:
@@ -341,9 +361,19 @@ async def open_adaptive_opportunity(
     provides."""
     opportunity_service = OpportunityPersistenceService(session)
 
+    # BE-P2: real practice history, so spacing_due can actually vary between candidates. Both call
+    # sites (BE4b's selection endpoint and BE4e's next-or-complete transition) reach this one place,
+    # so neither can drift from the other.
+    sessions_since_practice = await ItemOpportunityRepository(session).sessions_since_practice(learner_id)
+
     try:
         selection_result = select_candidate(
-            adapter=adapter, catalogue=catalogue, bkt_config=_ENGINEERING_BKT_CONFIG, grade=grade, mastery=mastery
+            adapter=adapter,
+            catalogue=catalogue,
+            bkt_config=_ENGINEERING_BKT_CONFIG,
+            grade=grade,
+            mastery=mastery,
+            sessions_since_practice=sessions_since_practice,
         )
     except LiveEngineError as exc:
         raise ConflictError() from exc

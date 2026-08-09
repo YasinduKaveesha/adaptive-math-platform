@@ -32,12 +32,9 @@ const navigationTheme = {
 
 function RootNavigator() {
   const { status } = useAuth();
-  // Component B pages are directly previewable while the app is in development.
-  // Production builds continue to require validated learner authorization.
-  const componentBPagePreview = process.env.EXPO_PUBLIC_APP_ENV === 'development';
   const authorized = status === 'authorized';
-  const learnerAccess = authorized || status === 'preview' || componentBPagePreview;
-  const onboarding = status === 'onboarding' && !componentBPagePreview;
+  const learnerAccess = authorized || status === 'preview';
+  const onboarding = status === 'onboarding';
 
   return (
     <ThemeProvider value={navigationTheme}>

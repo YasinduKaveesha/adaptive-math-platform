@@ -158,14 +158,27 @@ class TestHintPort:
         self, adapter: LiveEngineAdapter, catalogue, catalogue_checksum: str
     ) -> None:
         hint = adapter.get_hint(catalogue, catalogue_checksum, "B-ADD04-2D-NO-REGROUP", 1)
-        assert hint.content == "Add the ones first, then the tens."
+        # Verbatim from R26-IT-138 §11. Until the hint port, the fixture carried text written for
+        # the fixture itself ("Add the ones first, then the tens.") rather than the governed
+        # string, so this assertion was pinning unreviewed content.
+        assert hint.content == "Add ones with ones and tens with tens."
         assert hint.hint_level == 1
 
-    def test_missing_hint_content_fails_closed(
+    def test_absent_hint_content_fails_closed(
         self, adapter: LiveEngineAdapter, catalogue, catalogue_checksum: str
     ) -> None:
+        """Fail-closed coverage for absent hint content.
+
+        NOTE: no catalogue template exercises the missing-content path any more. All 36 templates
+        now carry governed L1/L2/L3 text, so ``B-DIV03-DIVIDE-BY-2`` — which this test used to use
+        — resolves successfully. Absence is constructed explicitly below instead of being borrowed
+        from a gap in the data; the guarantee itself (raise, never synthesize a fallback) is
+        unchanged and still covered.
+        """
         with pytest.raises(HintUnavailableError):
-            adapter.get_hint(catalogue, catalogue_checksum, "B-DIV03-DIVIDE-BY-2", 1)
+            adapter.get_hint(catalogue, catalogue_checksum, "B-NOT-A-REAL-TEMPLATE", 1)
+        with pytest.raises(HintUnavailableError):
+            adapter.get_hint(catalogue, catalogue_checksum, "B-DIV03-DIVIDE-BY-2", 4)
 
 
 class TestBktPort:

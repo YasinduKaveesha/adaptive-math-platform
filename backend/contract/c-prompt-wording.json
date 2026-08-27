@@ -1,0 +1,197 @@
+{
+  "entries": [
+    {
+      "game_task_template_id": "C-BT-01",
+      "prompt_text": "Show this number using tens and ones.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-BT-02",
+      "prompt_text": "Show this number using hundreds, tens, and ones.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-BT-03",
+      "prompt_text": "Trade ten ones for one ten. Write how many tens and ones you have now.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-BT-04",
+      "prompt_text": "Break one ten into ten ones. Write how many tens and ones you have now.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-CC-01",
+      "prompt_text": "Select every object one time. Then write how many you selected.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-CC-02",
+      "prompt_text": "Put this many objects in the box.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-CC-03",
+      "prompt_text": "Count the objects. Then choose the number that matches.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-CC-04",
+      "prompt_text": "Look at the objects before and after. Is the amount the same, or has it changed?",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-EG-01",
+      "prompt_text": "Build the groups shown, with the same number in each group.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-EG-02",
+      "prompt_text": "Build the array shown.",
+      "variant_key": "direction",
+      "variant_value": "build"
+    },
+    {
+      "game_task_template_id": "C-EG-02",
+      "prompt_text": "Tell how many rows, columns, and squares the array has.",
+      "variant_key": "direction",
+      "variant_value": "read"
+    },
+    {
+      "game_task_template_id": "C-EG-03",
+      "prompt_text": "Find the total for the equal groups shown.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-JB-01",
+      "prompt_text": "Join the two groups. Write the total.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-JB-02",
+      "prompt_text": "Start at the larger number and count on. Write where you land and each jump.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-JB-03",
+      "prompt_text": "Add the two numbers.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-JB-04",
+      "prompt_text": "Add the two numbers. Say whether you traded ones for a ten.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-MCL-01",
+      "prompt_text": "Choose the number that matches the amount shown.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-MCL-02",
+      "prompt_text": "Choose which side has more, or say if they are equal.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-MCL-03",
+      "prompt_text": "Compare the two numbers. Choose less than, greater than, or equal.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-MCL-04",
+      "prompt_text": "Move the marker to the target spot on the line.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-NP-01",
+      "prompt_text": "Write what comes next in the pattern.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-NP-02",
+      "prompt_text": "Write what comes just before.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-NP-03",
+      "prompt_text": "Keep counting the same way. Write what comes next.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-NP-04",
+      "prompt_text": "Put the numbers in order, from smallest to largest.",
+      "variant_key": "direction",
+      "variant_value": "ascending"
+    },
+    {
+      "game_task_template_id": "C-NP-04",
+      "prompt_text": "Put the numbers in order, from largest to smallest.",
+      "variant_key": "direction",
+      "variant_value": "descending"
+    },
+    {
+      "game_task_template_id": "C-SF-01",
+      "prompt_text": "Share the total equally. Write how many each person gets.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-SF-02",
+      "prompt_text": "Split the total into equal groups of the size shown. Write the groups you made.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-SF-03",
+      "prompt_text": "Split the number in half. Write the answer.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-TC-01",
+      "prompt_text": "Take away the amount shown. Write how many are left.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-TC-02",
+      "prompt_text": "Compare the two numbers. Write how many more or how many fewer.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-TC-03",
+      "prompt_text": "Subtract the second number from the first. Write the answer.",
+      "variant_key": null,
+      "variant_value": null
+    },
+    {
+      "game_task_template_id": "C-TC-04",
+      "prompt_text": "Subtract the second number from the first. Say whether you traded a ten for ones.",
+      "variant_key": null,
+      "variant_value": null
+    }
+  ],
+  "label": "TEST_FIXTURE_ONLY"
+}

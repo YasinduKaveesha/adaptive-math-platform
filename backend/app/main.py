@@ -11,6 +11,8 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.b_session import router as b_session_router
+from app.api.routes.c_session import router as c_session_router
+from app.api.routes.c_task import router as c_task_router
 from app.api.routes.classroom_membership import router as classroom_membership_router
 from app.api.routes.health import router as health_router
 from app.api.routes.identity import router as identity_router
@@ -120,6 +122,8 @@ def create_app() -> FastAPI:
     application.include_router(profile_classroom_router)
     application.include_router(classroom_membership_router)
     application.include_router(b_session_router)
+    application.include_router(c_session_router)
+    application.include_router(c_task_router)
     return application
 
 

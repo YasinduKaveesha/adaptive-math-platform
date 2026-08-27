@@ -73,6 +73,34 @@ class TechnicalFailureError(ApplicationError):
     message = "A technical failure occurred; please retry."
 
 
+class MasteryPayloadRejectedError(ApplicationError):
+    """Phase 4b, Q2/B2-c: translates ``app.domain.live_engine_c.errors.
+    MasteryPayloadContractValidationError``. ``details`` must be built ONLY from that error's
+    ``field_errors`` (``[(loc, type), ...]``, never ``str(exc)``) — the same
+    ``[{"location": [...], "type": ...}]`` shape ``install_error_handlers``'s own
+    ``RequestValidationError`` handler already uses (``errors.py``, this file), so a client sees
+    one consistent validation-error shape across both paths. Never carries a mastery value, a B
+    identity field, or any pydantic ``msg``/``input``."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "MASTERY_PAYLOAD_REJECTED"
+    message = "The supplied mastery payload failed contract validation."
+
+
+class ActionPayloadRejectedError(ApplicationError):
+    """Phase 5, C-12: translates ``app.domain.live_engine_c.action_payload_validation.
+    ActionPayloadValidationError``. ``details`` must be built ONLY from that error's
+    ``field_errors`` (``[(loc, type), ...]``), same shape as ``MasteryPayloadRejectedError`` —
+    never the submitted value itself, so a malformed/garbled ``action_payload`` never becomes a
+    silently-recorded wrong answer (owner's own words: "a malformed payload does not error, it
+    becomes a recorded wrong answer... enters the research data as a false negative") — it is
+    REJECTED before ``evaluate`` is ever called, proven by the call-counter spy pattern (P4-c)."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "ACTION_PAYLOAD_REJECTED"
+    message = "The submitted action payload failed structural validation."
+
+
 def error_response(
     request: Request,
     *,

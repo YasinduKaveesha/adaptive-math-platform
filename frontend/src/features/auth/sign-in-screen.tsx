@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -16,7 +17,10 @@ import { type Gender, useAuth } from '@/src/auth/auth-context';
 import { AppText } from '@/src/components/app-text';
 import { colors, radius, spacing } from '@/src/theme/tokens';
 
+const brandWordmark = require('../../../assets/images/mathmingo-header.png');
+
 type AuthMode = 'sign-in' | 'sign-up';
+type SignUpStep = 1 | 2 | 3;
 
 const genderOptions: { label: string; value: Gender }[] = [
   { label: 'Female', value: 'female' },
@@ -29,6 +33,7 @@ export function SignInScreen() {
   const { notice, retryAuthorization, signInWithEmail, signOut, signUpWithEmail, status } =
     useAuth();
   const [mode, setMode] = useState<AuthMode>('sign-in');
+  const [signUpStep, setSignUpStep] = useState<SignUpStep>(1);
   const [displayName, setDisplayName] = useState('');
   const [gender, setGender] = useState<Gender | null>(null);
   const [email, setEmail] = useState('');
@@ -47,11 +52,38 @@ export function SignInScreen() {
     confirmPassword === password &&
     !busy &&
     !configurationError;
+  // Sign-up is split into three screens (name+gender / email / password+confirm) so the card
+  // never grows taller than the sign-in card does -- each screen shows at most the two fields
+  // sign-in itself shows. `signUpStepReady` gates the primary button per screen; `canSignUp`
+  // (unchanged) remains the final, whole-form gate `handleSignUp` itself checks against.
+  const signUpStep1Ready = displayName.trim().length >= 2 && gender !== null && !busy && !configurationError;
+  const signUpStep2Ready = email.trim().length > 0 && !busy && !configurationError;
+  const signUpStepReady =
+    signUpStep === 1 ? signUpStep1Ready : signUpStep === 2 ? signUpStep2Ready : canSignUp;
 
   function changeMode(nextMode: AuthMode) {
     setMode(nextMode);
+    setSignUpStep(1);
     setFormMessage(null);
     setSuccessMessage(null);
+  }
+
+  function handleSignUpNext() {
+    setFormMessage(null);
+    if (signUpStep === 1) {
+      if (!signUpStep1Ready) {
+        setFormMessage('Enter your name and select a gender option to continue.');
+        return;
+      }
+      setSignUpStep(2);
+      return;
+    }
+    if (signUpStep === 2 && signUpStep2Ready) setSignUpStep(3);
+  }
+
+  function handleSignUpBack() {
+    setFormMessage(null);
+    setSignUpStep((step) => (step === 3 ? 2 : 1));
   }
 
   async function handleSignIn() {
@@ -79,14 +111,30 @@ export function SignInScreen() {
       setFormMessage(result.message);
     } else if (result.requiresEmailConfirmation) {
       setMode('sign-in');
+      setSignUpStep(1);
       setPassword('');
       setConfirmPassword('');
       setSuccessMessage('Account created. Check your email to confirm it, then sign in.');
     }
   }
 
+  function handlePrimaryPress() {
+    if (mode === 'sign-in') {
+      void handleSignIn();
+      return;
+    }
+    if (signUpStep < 3) {
+      handleSignUpNext();
+      return;
+    }
+    void handleSignUp();
+  }
+
   const displayedMessage = formMessage ?? notice;
-  const primaryEnabled = mode === 'sign-in' ? canSignIn : canSignUp;
+  const primaryEnabled = mode === 'sign-in' ? canSignIn : signUpStepReady;
+  const primaryLabel = mode === 'sign-in' ? 'LOG IN' : signUpStep < 3 ? 'NEXT' : 'CREATE';
+  const headingTitle =
+    mode === 'sign-in' ? 'Welcome back' : signUpStep === 1 ? 'Tell us a little about you.' : 'Create your account';
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.background }]}>
@@ -97,13 +145,12 @@ export function SignInScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled">
           <View style={styles.brand}>
-            <View style={[styles.logo, { backgroundColor: palette.primarySoft }]}>
-              <Ionicons color={palette.textPrimary} name="school-outline" size={34} />
-            </View>
-            <AppText align="center" variant="title">MathMingo</AppText>
-            <AppText align="center" style={{ color: palette.textSecondary }}>
-              Adaptive mathematics, one step at a time.
-            </AppText>
+            <Image
+              accessibilityLabel="MathMingo"
+              contentFit="contain"
+              source={brandWordmark}
+              style={styles.brandWordmark}
+            />
           </View>
 
           <View
@@ -125,7 +172,7 @@ export function SignInScreen() {
                       selected && { backgroundColor: palette.surface1, borderColor: palette.border },
                     ]}>
                     <AppText style={styles.modeText}>
-                      {item === 'sign-in' ? 'LOG IN' : 'CREATE ACCOUNT'}
+                      {item === 'sign-in' ? 'LOG IN' : 'CREATE'}
                     </AppText>
                   </Pressable>
                 );
@@ -133,14 +180,12 @@ export function SignInScreen() {
             </View>
 
             <View style={styles.heading}>
-              <AppText variant="subtitle">
-                {mode === 'sign-in' ? 'Welcome back' : 'Create your account'}
-              </AppText>
-              <AppText style={{ color: palette.textSecondary }}>
-                {mode === 'sign-in'
-                  ? 'Log in to continue learning.'
-                  : 'Tell us a little about you. Your teacher connection comes next.'}
-              </AppText>
+              <AppText variant="subtitle">{headingTitle}</AppText>
+              {mode === 'sign-in' ? (
+                <AppText style={{ color: palette.textSecondary }}>
+                  Log in to continue learning.
+                </AppText>
+              ) : null}
             </View>
 
             {displayedMessage ? (
@@ -176,7 +221,7 @@ export function SignInScreen() {
               </View>
             ) : null}
 
-            {mode === 'sign-up' ? (
+            {mode === 'sign-up' && signUpStep === 1 ? (
               <>
                 <Field label="Name">
                   <TextInput
@@ -226,6 +271,7 @@ export function SignInScreen() {
               </>
             ) : null}
 
+            {mode === 'sign-in' || signUpStep === 2 ? (
             <Field label="Email">
               <TextInput
                 accessibilityLabel="Email"
@@ -248,7 +294,9 @@ export function SignInScreen() {
                 value={email}
               />
             </Field>
+            ) : null}
 
+            {mode === 'sign-in' || signUpStep === 3 ? (
             <Field label="Password">
               <TextInput
                 accessibilityLabel="Password"
@@ -271,8 +319,9 @@ export function SignInScreen() {
                 value={password}
               />
             </Field>
+            ) : null}
 
-            {mode === 'sign-up' ? (
+            {mode === 'sign-up' && signUpStep === 3 ? (
               <Field label="Confirm password">
                 <TextInput
                   accessibilityLabel="Confirm password"
@@ -296,26 +345,43 @@ export function SignInScreen() {
               </Field>
             ) : null}
 
-            <Pressable
-              accessibilityRole="button"
-              disabled={!primaryEnabled}
-              onPress={() => void (mode === 'sign-in' ? handleSignIn() : handleSignUp())}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                {
-                  backgroundColor: primaryEnabled ? palette.primary : palette.textDisabled,
-                  borderBottomColor: primaryEnabled ? palette.primaryShadow : palette.textDisabled,
-                },
-                pressed && primaryEnabled && styles.buttonPressed,
-              ]}>
-              {busy ? (
-                <ActivityIndicator color={palette.primaryForeground} />
-              ) : (
-                <AppText style={[styles.buttonText, { color: palette.primaryForeground }]}> 
-                  {mode === 'sign-in' ? 'LOG IN' : 'CREATE ACCOUNT'}
-                </AppText>
-              )}
-            </Pressable>
+            <View style={mode === 'sign-up' && signUpStep > 1 ? styles.stepButtonsRow : undefined}>
+              {mode === 'sign-up' && signUpStep > 1 ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={handleSignUpBack}
+                  style={({ pressed }) => [
+                    styles.secondaryButton,
+                    { borderColor: palette.border },
+                    pressed && styles.buttonPressed,
+                  ]}>
+                  <AppText style={[styles.buttonText, { color: palette.textPrimary }]}>BACK</AppText>
+                </Pressable>
+              ) : null}
+
+              <Pressable
+                accessibilityRole="button"
+                disabled={!primaryEnabled}
+                onPress={handlePrimaryPress}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  mode === 'sign-up' && signUpStep > 1 && styles.primaryButtonFlex,
+                  {
+                    backgroundColor: primaryEnabled ? palette.primary : palette.textDisabled,
+                    borderBottomColor: primaryEnabled ? palette.primaryShadow : palette.textDisabled,
+                  },
+                  pressed && primaryEnabled && styles.buttonPressed,
+                ]}>
+                {busy ? (
+                  <ActivityIndicator color={palette.primaryForeground} />
+                ) : (
+                  <AppText style={[styles.buttonText, { color: palette.primaryForeground }]}>
+                    {primaryLabel}
+                  </AppText>
+                )}
+              </Pressable>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -387,14 +453,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
+  brandWordmark: { aspectRatio: 1916 / 821, height: 136 },
   label: { fontSize: 16, fontWeight: '800' },
-  logo: {
-    alignItems: 'center',
-    borderRadius: radius.lg,
-    height: 64,
-    justifyContent: 'center',
-    width: 64,
-  },
   message: {
     alignItems: 'flex-start',
     borderRadius: radius.md,
@@ -423,7 +483,18 @@ const styles = StyleSheet.create({
     minHeight: 60,
     paddingHorizontal: spacing.md,
   },
+  primaryButtonFlex: { flex: 1 },
   recoveryActions: { alignItems: 'flex-start', gap: spacing.sm },
+  secondaryButton: {
+    alignItems: 'center',
+    borderRadius: radius.md,
+    borderWidth: 2,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 60,
+    paddingHorizontal: spacing.md,
+  },
+  stepButtonsRow: { flexDirection: 'row', gap: spacing.sm },
   safeArea: { flex: 1 },
   scrollContent: {
     alignItems: 'center',

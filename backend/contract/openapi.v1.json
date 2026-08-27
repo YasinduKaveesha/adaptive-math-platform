@@ -103,6 +103,270 @@
         "title": "AuthenticatedPrincipal",
         "type": "object"
       },
+      "CActiveSessionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CSessionFields"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "session",
+          "request_id"
+        ],
+        "title": "CActiveSessionResponse",
+        "type": "object"
+      },
+      "CNextTaskResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "blanks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blanks"
+          },
+          "c_task_instance_id": {
+            "format": "uuid",
+            "title": "C Task Instance Id",
+            "type": "string"
+          },
+          "difficulty_level": {
+            "title": "Difficulty Level",
+            "type": "integer"
+          },
+          "game_family_id": {
+            "title": "Game Family Id",
+            "type": "string"
+          },
+          "game_task_template_id": {
+            "title": "Game Task Template Id",
+            "type": "string"
+          },
+          "interactive_assets": {
+            "additionalProperties": true,
+            "title": "Interactive Assets",
+            "type": "object"
+          },
+          "prompt_payload": {
+            "additionalProperties": true,
+            "title": "Prompt Payload",
+            "type": "object"
+          },
+          "prompt_text": {
+            "title": "Prompt Text",
+            "type": "string"
+          },
+          "representation_mode": {
+            "title": "Representation Mode",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "scaffold_state": {
+            "title": "Scaffold State",
+            "type": "string"
+          },
+          "skill_id": {
+            "title": "Skill Id",
+            "type": "string"
+          },
+          "task_index": {
+            "title": "Task Index",
+            "type": "integer"
+          },
+          "technical_status": {
+            "title": "Technical Status",
+            "type": "string"
+          },
+          "valid_action_space": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Valid Action Space",
+            "type": "object"
+          }
+        },
+        "required": [
+          "c_task_instance_id",
+          "game_family_id",
+          "game_task_template_id",
+          "task_index",
+          "skill_id",
+          "difficulty_level",
+          "representation_mode",
+          "prompt_payload",
+          "interactive_assets",
+          "valid_action_space",
+          "scaffold_state",
+          "technical_status",
+          "blanks",
+          "prompt_text",
+          "request_id"
+        ],
+        "title": "CNextTaskResponse",
+        "type": "object"
+      },
+      "CSessionCommandResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "c_session_id": {
+            "format": "uuid",
+            "title": "C Session Id",
+            "type": "string"
+          },
+          "grade": {
+            "title": "Grade",
+            "type": "integer"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          },
+          "session_mode": {
+            "title": "Session Mode",
+            "type": "string"
+          },
+          "session_phase": {
+            "title": "Session Phase",
+            "type": "string"
+          },
+          "started_at_utc": {
+            "format": "date-time",
+            "title": "Started At Utc",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "c_session_id",
+          "state",
+          "session_mode",
+          "session_phase",
+          "grade",
+          "started_at_utc",
+          "row_version",
+          "request_id"
+        ],
+        "title": "CSessionCommandResponse",
+        "type": "object"
+      },
+      "CSessionFields": {
+        "additionalProperties": false,
+        "properties": {
+          "c_session_id": {
+            "format": "uuid",
+            "title": "C Session Id",
+            "type": "string"
+          },
+          "grade": {
+            "title": "Grade",
+            "type": "integer"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          },
+          "session_mode": {
+            "title": "Session Mode",
+            "type": "string"
+          },
+          "session_phase": {
+            "title": "Session Phase",
+            "type": "string"
+          },
+          "started_at_utc": {
+            "format": "date-time",
+            "title": "Started At Utc",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "c_session_id",
+          "state",
+          "session_mode",
+          "session_phase",
+          "grade",
+          "started_at_utc",
+          "row_version"
+        ],
+        "title": "CSessionFields",
+        "type": "object"
+      },
+      "CSubmitActionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action_payload": {
+            "additionalProperties": true,
+            "title": "Action Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "action_payload"
+        ],
+        "title": "CSubmitActionRequest",
+        "type": "object"
+      },
+      "CSubmitActionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "c_task_instance_id": {
+            "format": "uuid",
+            "title": "C Task Instance Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "response_matched": {
+            "title": "Response Matched",
+            "type": "boolean"
+          },
+          "scaffold_level": {
+            "title": "Scaffold Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "c_task_instance_id",
+          "response_matched",
+          "scaffold_level",
+          "request_id"
+        ],
+        "title": "CSubmitActionResult",
+        "type": "object"
+      },
       "ClassroomCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -322,6 +586,54 @@
           "request_id"
         ],
         "title": "ClassroomResponse",
+        "type": "object"
+      },
+      "CompleteCSessionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "attendance_status": {
+            "enum": [
+              "attended",
+              "partial",
+              "missed"
+            ],
+            "title": "Attendance Status",
+            "type": "string"
+          },
+          "technical_blocked_bootstrap": {
+            "default": false,
+            "title": "Technical Blocked Bootstrap",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attendance_status"
+        ],
+        "title": "CompleteCSessionRequest",
+        "type": "object"
+      },
+      "CreateCSessionRequest": {
+        "additionalProperties": false,
+        "description": "R-5 (Phase 4b continuation, supervisor ruling): carries grade and session_mode ONLY. B's\nidentity fields (mastery_source_student_id etc.) were removed from here -- accepting them from\nan HTTP client let an untrusted caller assert B provenance it never produced (strictly worse\nthan the C-manufactures-its-own-provenance failure R1 was written to prevent). See\napp/application/live_engine_c/mastery_fixture.py's module docstring for the fixture that now\nsupplies all of it, for every combined-mode session, server-side only.",
+        "properties": {
+          "grade": {
+            "title": "Grade",
+            "type": "integer"
+          },
+          "session_mode": {
+            "enum": [
+              "combined",
+              "c_only"
+            ],
+            "title": "Session Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grade",
+          "session_mode"
+        ],
+        "title": "CreateCSessionRequest",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1857,6 +2169,270 @@
         "summary": "Get Session Summary",
         "tags": [
           "b-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/c/sessions": {
+      "post": {
+        "operationId": "create_session_api_v1_c_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CSessionCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Session",
+        "tags": [
+          "c-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/c/sessions/active": {
+      "get": {
+        "operationId": "get_active_session_api_v1_c_sessions_active_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CActiveSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Active Session",
+        "tags": [
+          "c-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/c/sessions/{c_session_id}/abandon": {
+      "post": {
+        "operationId": "abandon_session_api_v1_c_sessions__c_session_id__abandon_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "c_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "C Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CSessionCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Abandon Session",
+        "tags": [
+          "c-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/c/sessions/{c_session_id}/complete": {
+      "post": {
+        "operationId": "complete_session_api_v1_c_sessions__c_session_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "c_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "C Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteCSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CSessionCommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Session",
+        "tags": [
+          "c-session-lifecycle"
+        ]
+      }
+    },
+    "/api/v1/c/sessions/{c_session_id}/tasks/next": {
+      "post": {
+        "operationId": "next_task_api_v1_c_sessions__c_session_id__tasks_next_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "c_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "C Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CNextTaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Next Task",
+        "tags": [
+          "c-task-serving"
+        ]
+      }
+    },
+    "/api/v1/c/sessions/{c_session_id}/tasks/{c_task_instance_id}/actions": {
+      "post": {
+        "operationId": "submit_action_api_v1_c_sessions__c_session_id__tasks__c_task_instance_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "c_session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "C Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "c_task_instance_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "C Task Instance Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CSubmitActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CSubmitActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Action",
+        "tags": [
+          "c-task-serving"
         ]
       }
     },

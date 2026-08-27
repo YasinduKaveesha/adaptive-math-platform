@@ -33,6 +33,9 @@ Thumbs.db
 !/backend/buildLog.md
 # buildLog.md was closed at FE-0c and rotated; all later batch entries live here.
 !/backend/buildLog1.md
+# buildLog1.md was closed at FE-surface-remount-key (2026-08-25) and rotated; all later batch
+# entries live here.
+!/backend/buildLog2.md
 # Carries the mandatory "delete this directory when FE-1b lands" notice for the dev fixture.
 !/backend/scripts/README.md
 !/backend/packaging/component_b_internal/IMPORT_POLICY.md
@@ -48,6 +51,13 @@ Thumbs.db
 # BE3b/BE3c test fixture (not documentation): the *.md rule above would otherwise silently
 # exclude this file from every commit, even though BE3b's and BE3c's test suites depend on it.
 !/backend/tests/fixtures/runtime_bundle/test_catalogue.md
+
+# CONNECT Step 2/3: the governed Component C catalogue, vendored verbatim into provenance/ and
+# read at runtime via _CATALOGUE_PATH (c_session_service.py, task_service.py). Same reasoning as
+# the BE3b/BE3c carve-out above -- the *.md rule would otherwise silently exclude this file from
+# every commit, leaving a fresh clone with a backend that 409s on every session with no test able
+# to catch it, since the suite only ever sees a working tree where the file is present locally.
+!/backend/provenance/R26-IT-138_Component_C_Game_Task_Catalogue_v1.0.md
 !/Component_B_Backend_Overview.md
 !/Component_B_Measurement_And_Parity_Review.md
 !/Component_B_Backend_Work_Order.md

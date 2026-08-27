@@ -56,6 +56,10 @@ export type SessionPlan =
       // drawable, and fails closed to stem-only when nothing is.
       promptPayload: Record<string, unknown>;
       skillLabel: string;
+      // The raw wire id, carried alongside its formatted `skillLabel` for callers that need the id
+      // itself rather than the child-readable version — the card's accent colour, keyed off this
+      // exact string by session-skill-accents.ts, not off the display label.
+      skillId: string;
       itemOpportunityId: string;
       requestId: string;
       timeoutDeadlineUtc: string;
@@ -119,6 +123,7 @@ export function planPresentation(
     stem,
     promptPayload: presentation.prompt,
     skillLabel: formatSkillLabel(presentation.skill_id),
+    skillId: presentation.skill_id,
     itemOpportunityId: presentation.item_opportunity_id,
     requestId,
     timeoutDeadlineUtc: presentation.server_timeout_deadline_utc,
@@ -472,7 +477,11 @@ export function outcomeView(outcome: AttemptOutcome): OutcomeView {
   if (outcome === 'timeout') {
     return { title: "Time's up", detail: "Let's keep going.", canTryAgain: false };
   }
-  return { title: 'Not quite', detail: 'Have another go — you can try as many times as you like.', canTryAgain: true };
+  // No detail copy: an unbounded "try as many times as you like" claim tracked the same
+  // unapproved absence of a client-side attempt cap as the sentence above once did, restated as an
+  // invitation instead of a limit — removed at the user's request rather than reworded, since
+  // `canTryAgain: true` already carries everything this screen needs to know to offer TRY AGAIN.
+  return { title: 'Not quite', detail: '', canTryAgain: true };
 }
 
 // --- failure classification ---------------------------------------------------------------------

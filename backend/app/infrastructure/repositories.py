@@ -7,11 +7,15 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence_models import (
-    AppUser, AppUserLearnerLink, AttemptRecord, AuditEvent, Base, Classroom, ClassroomInvite,
-    ClassroomMembership, HintEventRecord, IdempotencyRecord, ItemOpportunityRecord, Learner,
-    LearnerSkillStateRecord, PresentationTokenRecord, RuntimeBundleRecord,
-    SessionAggregateResultRecord, SessionEvent, SessionRecord, SkillCertificationResultRecord,
-    SkillStateTransitionRecord, TaskInstanceRecord, TeacherProfile,
+    AppUser, AppUserLearnerLink, AttemptRecord, AuditEvent, Base, CGameplayEventRecord, Classroom,
+    ClassroomInvite, ClassroomMembership, CLearnerLocalStateRecord, CPolicyDecisionRecord,
+    CRuntimeBundleRecord, CSafetyEventRecord, CScaffoldEventRecord,
+    CSessionRecord, CTaskInstanceRecord, CTaskOpportunityRecord, CTaskOpportunitySummaryRecord,
+    CTaskOpportunityVerdictRecord,
+    HintEventRecord, IdempotencyRecord,
+    ItemOpportunityRecord, Learner, LearnerSkillStateRecord, PresentationTokenRecord,
+    RuntimeBundleRecord, SessionAggregateResultRecord, SessionEvent, SessionRecord,
+    SkillCertificationResultRecord, SkillStateTransitionRecord, TaskInstanceRecord, TeacherProfile,
 )
 
 
@@ -102,6 +106,364 @@ class SessionRecordRepository(SqlAlchemyNeutralRepository[SessionRecord]):
                 SessionRecord.learner_id == learner_id,
             )
         )
+
+
+class CRuntimeBundleRecordRepository(SqlAlchemyNeutralRepository[CRuntimeBundleRecord]):
+    model_type = CRuntimeBundleRecord
+
+    async def find_by_version(self, bundle_version: str) -> CRuntimeBundleRecord | None:
+        return await self.session.scalar(
+            select(CRuntimeBundleRecord).where(CRuntimeBundleRecord.bundle_version == bundle_version)
+        )
+
+
+class CSessionRecordRepository(SqlAlchemyNeutralRepository[CSessionRecord]):
+    model_type = CSessionRecord
+
+    async def lock_for_update(self, c_session_id: UUID) -> None:
+        """CONNECT resume-instead-of-mint batch (supervisor ruling): closes the race where two
+        concurrent ``next_task`` calls on a session with no pending instance yet could both find
+        nothing to resume and both fall through to the mint path, computing the SAME
+        ``task_index`` from the same pre-insert count (``CTaskOpportunityRecord`` carries no
+        uniqueness constraint on ``(c_session_id, task_index)`` -- verified directly). Because
+        ``task_index`` is the SOLE seed-lineage-distinguishing element
+        (``task_service.py``'s own module docstring), a same-``task_index`` collision would derive
+        the identical RNG seed and draw the identical template -- two indistinguishable duplicate
+        opportunity rows, silently corrupting the attempt-level history Family 7 requires be
+        preserved, not merely uncorrupted-looking. Locking the SESSION row here (the instance row
+        may not exist yet, unlike Step 5's lock target) closes both this race and any race between
+        the resume check and the mint decision -- taken once, at the top of ``next_task``, before
+        either."""
+        await self.session.execute(
+            select(CSessionRecord.c_session_id).where(CSessionRecord.c_session_id == c_session_id).with_for_update()
+        )
+
+    async def find_starting_or_active_for_learner(self, student_id: UUID) -> CSessionRecord | None:
+        return await self.session.scalar(
+            select(CSessionRecord).where(
+                CSessionRecord.student_id == student_id,
+                CSessionRecord.state.in_(("starting", "active")),
+            )
+        )
+
+    async def find_active_for_learner(self, student_id: UUID) -> CSessionRecord | None:
+        return await self.session.scalar(
+            select(CSessionRecord).where(
+                CSessionRecord.student_id == student_id,
+                CSessionRecord.state == "active",
+            )
+        )
+
+    async def get_owned(self, c_session_id: UUID, student_id: UUID) -> CSessionRecord | None:
+        return await self.session.scalar(
+            select(CSessionRecord).where(
+                CSessionRecord.c_session_id == c_session_id,
+                CSessionRecord.student_id == student_id,
+            )
+        )
+
+
+class CLearnerLocalStateRepository(SqlAlchemyNeutralRepository[CLearnerLocalStateRecord]):
+    model_type = CLearnerLocalStateRecord
+
+    async def find_by_student(self, student_id: UUID) -> CLearnerLocalStateRecord | None:
+        return await self.session.scalar(
+            select(CLearnerLocalStateRecord).where(CLearnerLocalStateRecord.student_id == student_id)
+        )
+
+
+class CTaskOpportunityRecordRepository(SqlAlchemyNeutralRepository[CTaskOpportunityRecord]):
+    model_type = CTaskOpportunityRecord
+
+    async def count_for_session(self, c_session_id: UUID) -> int:
+        """Phase 5: the NEXT ``task_index`` for a session is ``count_for_session(...)`` -- no
+        separate counter column exists on ``c_sessions``; the opportunity rows ARE the count."""
+        return await self.session.scalar(
+            select(func.count()).select_from(CTaskOpportunityRecord).where(
+                CTaskOpportunityRecord.c_session_id == c_session_id
+            )
+        ) or 0
+
+    async def list_ordered_for_session(self, c_session_id: UUID) -> Sequence[CTaskOpportunityRecord]:
+        """Phase 8, J1-4: every OFFERED task opportunity for a session, ordered by ``task_index``
+        -- the guarded accessor's OFFERED set (``telemetry_validation.
+        get_derivable_history_for_session``'s own only caller). Never filtered, never truncated
+        here -- gap detection is the accessor's own job, not this query's."""
+        result = await self.session.execute(
+            select(CTaskOpportunityRecord)
+            .where(CTaskOpportunityRecord.c_session_id == c_session_id)
+            .order_by(CTaskOpportunityRecord.task_index)
+        )
+        return result.scalars().all()
+
+
+class CTaskInstanceRecordRepository(SqlAlchemyNeutralRepository[CTaskInstanceRecord]):
+    model_type = CTaskInstanceRecord
+
+    async def get_owned(self, c_task_instance_id: UUID, c_session_id: UUID) -> CTaskInstanceRecord | None:
+        """Phase 5: ``c_task_instances`` carries no denormalized ``c_session_id`` (Phase 3a's own
+        minimal-FK style, mirroring B) -- ownership is proven through the parent
+        ``c_task_opportunities`` row instead."""
+        return await self.session.scalar(
+            select(CTaskInstanceRecord)
+            .join(CTaskOpportunityRecord, CTaskInstanceRecord.c_task_opportunity_id == CTaskOpportunityRecord.c_task_opportunity_id)
+            .where(
+                CTaskInstanceRecord.c_task_instance_id == c_task_instance_id,
+                CTaskOpportunityRecord.c_session_id == c_session_id,
+            )
+        )
+
+    async def lock_for_update(self, c_task_instance_id: UUID) -> None:
+        """CONNECT Step 5 (supervisor ruling, closing the attempt_number race identified while
+        planning that step): the SAME row, the SAME lock the two ``c_gameplay_events`` triggers
+        already take (``PERFORM 1 FROM c_task_instances WHERE c_task_instance_id = ... FOR
+        UPDATE``, migrations/versions/20260816_0003_c3b_gameplay_event_invariants.py), taken here
+        EARLIER in the same transaction -- before ``task_service.submit_action`` counts existing
+        ``answer_submitted`` events to derive ``attempt_number``, not after. Taking it here first
+        means a second, concurrent ``submit_action`` call against the same instance blocks BEFORE
+        it counts, not after -- closing the window where two racing submissions could both read
+        the same count and write the same attempt_number. When the trigger later re-takes this
+        exact lock inside the same transaction, it is already held by that transaction -- no
+        deadlock, no second locking mechanism, no migration."""
+        await self.session.execute(
+            select(CTaskInstanceRecord.c_task_instance_id)
+            .where(CTaskInstanceRecord.c_task_instance_id == c_task_instance_id)
+            .with_for_update()
+        )
+
+    async def find_most_recent_for_session(self, c_session_id: UUID) -> CTaskInstanceRecord | None:
+        """CONNECT resume-instead-of-mint batch (owner ruling): the candidate for "the pending
+        task", if any -- the caller is responsible for checking
+        ``CGameplayEventRecordRepository.has_terminal_for_instance`` on the result before treating
+        it as resumable. Ordered by ``task_index`` descending so a session with more than one
+        unterminated instance (only possible from before this batch shipped) resumes the most
+        recent draw, not an arbitrary one."""
+        return await self.session.scalar(
+            select(CTaskInstanceRecord)
+            .join(
+                CTaskOpportunityRecord,
+                CTaskInstanceRecord.c_task_opportunity_id == CTaskOpportunityRecord.c_task_opportunity_id,
+            )
+            .where(CTaskOpportunityRecord.c_session_id == c_session_id)
+            .order_by(CTaskInstanceRecord.task_index.desc())
+            .limit(1)
+        )
+
+    async def find_by_opportunity(self, c_task_opportunity_id: UUID) -> CTaskInstanceRecord | None:
+        """Phase 8, J1-4: the 1:1 opportunity -> instance lookup (``uq_c_task_instances_opportunity``,
+        persistence_models.py:827) the guarded accessor needs to reach
+        ``CGameplayEventRecordRepository.has_terminal_for_instance`` from an OFFERED opportunity
+        row -- an opportunity with no instance yet (task never started) is not a gap, it is simply
+        absent from this lookup, and the accessor's own caller treats a ``None`` result that way."""
+        return await self.session.scalar(
+            select(CTaskInstanceRecord).where(
+                CTaskInstanceRecord.c_task_opportunity_id == c_task_opportunity_id
+            )
+        )
+
+
+class CGameplayEventRecordRepository(SqlAlchemyNeutralRepository[CGameplayEventRecord]):
+    model_type = CGameplayEventRecord
+
+    # Phase 6a: hand-copied from component_c_generator.models.gameplay.TERMINAL_EVENT_TYPES, the
+    # same convention persistence_models.py's own ck_c_gameplay_events_terminal_reason /
+    # uq_c_gameplay_events_at_most_one_terminal_per_instance already use -- this file is not
+    # app/infrastructure/live_engine_c/adapter.py, the one file X-1 permits a
+    # component_c_generator import root, so the package's own tuple cannot be read here at
+    # runtime. tests/test_c6a_summary_derivation.py verifies this tuple against the package's
+    # live value (the R-I pattern).
+    _TERMINAL_EVENT_TYPES = ("game_task_completed", "game_task_skipped", "game_task_quit")
+
+    async def max_index_and_timestamp_for_instance(self, game_task_instance_id: UUID) -> tuple[int, int]:
+        """Phase 3b's own triggers require ``event_index`` to be consecutive from 1 and
+        ``event_timestamp_relative_ms`` to be non-decreasing within a task -- both queried live
+        here rather than assumed, so a second event for the same instance is always valid
+        regardless of how many events already exist."""
+        row = (
+            await self.session.execute(
+                select(
+                    func.max(CGameplayEventRecord.event_index),
+                    func.max(CGameplayEventRecord.event_timestamp_relative_ms),
+                ).where(CGameplayEventRecord.game_task_instance_id == game_task_instance_id)
+            )
+        ).one()
+        max_index, max_timestamp = row
+        return (max_index or 0), (max_timestamp or 0)
+
+    async def count_answer_submitted_for_instance(self, game_task_instance_id: UUID) -> int:
+        """CONNECT Step 5 (Family 3, "each retry must receive an incrementing attempt_number";
+        ESCALATIONS.md §2): the SAME derivation
+        component_c_generator.behaviour.summary.derive_task_opportunity_summary already performs
+        internally (``len(submitted_events)``, behaviour/summary.py:43-46 -- counts
+        ``answer_submitted`` events, never reads ``attempt_number``), replicated here at WRITE
+        time so the persisted column itself is honest rather than merely derivable from the event
+        count downstream. The caller is responsible for holding
+        ``CTaskInstanceRecordRepository.lock_for_update`` on this same instance first, in the same
+        transaction, before calling this -- see that method's own docstring for why the ordering
+        is what closes the concurrent-submission race, not this query alone. No ceiling is applied
+        or implied here: I4's numeric attempt-count bound is BLOCKED, ESCALATED TO THE OWNER
+        (persistence_models.py's own CGameplayEventRecord docstring, R-L) and is not built in any
+        form by this step -- a child may submit an unbounded number of wrong answers today, and
+        attempt_number will grow unboundedly along with it."""
+        count = await self.session.scalar(
+            select(func.count()).select_from(CGameplayEventRecord).where(
+                CGameplayEventRecord.game_task_instance_id == game_task_instance_id,
+                CGameplayEventRecord.event_type == "answer_submitted",
+            )
+        )
+        return count or 0
+
+    async def has_started_for_instance(self, game_task_instance_id: UUID) -> bool:
+        """Phase 6a: LATENT DEFECT SINCE PHASE 5, found by this batch's own derivation wiring --
+        no code path anywhere in this codebase ever wrote a "game_task_started" event
+        (next_task writes only "game_task_offered"; submit_action wrote none at all before this
+        batch), so derive_task_opportunity_summary's own invariant ("a never-started task cannot
+        be completed") could never have been satisfied by any real submission. submit_action now
+        writes one "game_task_started" event, guarded by this check so a second submit_action
+        call against the same instance (a wrong-answer retry, still permitted -- only a
+        TERMINAL instance is blocked, T1-4) does not write it twice."""
+        count = await self.session.scalar(
+            select(func.count()).select_from(CGameplayEventRecord).where(
+                CGameplayEventRecord.game_task_instance_id == game_task_instance_id,
+                CGameplayEventRecord.event_type == "game_task_started",
+            )
+        )
+        return bool(count)
+
+    async def has_terminal_for_instance(self, game_task_instance_id: UUID) -> bool:
+        """Phase 6a, T1-3/T1-4: the service-level half of the exactly-one-terminal triple -- the
+        DB-enforced half is the existing partial unique index
+        (uq_c_gameplay_events_at_most_one_terminal_per_instance, persistence_models.py:923)."""
+        count = await self.session.scalar(
+            select(func.count()).select_from(CGameplayEventRecord).where(
+                CGameplayEventRecord.game_task_instance_id == game_task_instance_id,
+                CGameplayEventRecord.event_type.in_(self._TERMINAL_EVENT_TYPES),
+            )
+        )
+        return bool(count)
+
+    async def list_ordered_for_instance(self, game_task_instance_id: UUID) -> Sequence[CGameplayEventRecord]:
+        """Phase 6a: the full, ``event_index``-ordered event stream for one task instance --
+        summary derivation's own input shape (SummaryPort). Never filtered, never truncated:
+        derive_task_opportunity_summary raises on an incoherent stream itself (e.g. not exactly
+        one terminal event) rather than this query silently hiding one."""
+        result = await self.session.execute(
+            select(CGameplayEventRecord)
+            .where(CGameplayEventRecord.game_task_instance_id == game_task_instance_id)
+            .order_by(CGameplayEventRecord.event_index)
+        )
+        return result.scalars().all()
+
+    async def list_all_events_for_session(self, c_session_id: UUID) -> Sequence[CGameplayEventRecord]:
+        """Phase 9a: the full SESSION-wide event stream (every task instance), ordered by
+        ``task_index`` then ``event_index`` -- ``derive_session_aggregate``'s own input shape
+        (AggregationPort), which groups by ``task_index`` to sum per-task spans (FIX 1, C5.0
+        revision -- see aggregation_service.py's own citation-rule flag on that comment). Deliberately
+        NOT named ``list_ordered_for_session`` -- that exact method name is reserved to
+        ``CTaskOpportunitySummaryRecordRepository`` and is the one string
+        ``test_be2_architecture_guards.py``'s Phase 8 guard scans for; reusing it here would trip
+        that guard for a call it was never meant to restrict."""
+        result = await self.session.execute(
+            select(CGameplayEventRecord)
+            .where(CGameplayEventRecord.c_session_id == c_session_id)
+            .order_by(CGameplayEventRecord.task_index, CGameplayEventRecord.event_index)
+        )
+        return result.scalars().all()
+
+
+class CTaskOpportunitySummaryRecordRepository(SqlAlchemyNeutralRepository[CTaskOpportunitySummaryRecord]):
+    model_type = CTaskOpportunitySummaryRecord
+
+    async def find_by_instance(self, game_task_instance_id: UUID) -> CTaskOpportunitySummaryRecord | None:
+        return await self.session.scalar(
+            select(CTaskOpportunitySummaryRecord).where(
+                CTaskOpportunitySummaryRecord.game_task_instance_id == game_task_instance_id
+            )
+        )
+
+    async def list_ordered_for_session(self, c_session_id: UUID) -> Sequence[CTaskOpportunitySummaryRecord]:
+        """Phase 6b: the full running session history (v3.0 §7.2: "history passed to
+        build_policy_evidence is the full running session history including the just-finished
+        task"), ordered by task_index -- never filtered, never truncated here."""
+        result = await self.session.execute(
+            select(CTaskOpportunitySummaryRecord)
+            .where(CTaskOpportunitySummaryRecord.c_session_id == c_session_id)
+            .order_by(CTaskOpportunitySummaryRecord.task_index)
+        )
+        return result.scalars().all()
+
+
+class CTaskOpportunityVerdictRecordRepository(SqlAlchemyNeutralRepository[CTaskOpportunityVerdictRecord]):
+    model_type = CTaskOpportunityVerdictRecord
+
+    async def list_for_session(self, c_session_id: UUID) -> Sequence[CTaskOpportunityVerdictRecord]:
+        """Batch 4: every verdict row for a session -- liveness is graph-resolved by
+        ``telemetry_validation._live_verdict_ids``, not order-dependent, so ordering here is only
+        for test/debug legibility (chronological, the same discipline
+        ``CPolicyDecisionRecordRepository.list_chronological_for_session`` already uses).
+        Deliberately NOT named ``list_ordered_for_session`` -- that exact method name is reserved
+        to ``CTaskOpportunitySummaryRecordRepository`` and is the literal string
+        ``test_be2_architecture_guards.py``'s Phase 8 AST guard scans for; reusing it here would
+        trip that guard for a call it was never meant to restrict."""
+        result = await self.session.execute(
+            select(CTaskOpportunityVerdictRecord)
+            .where(CTaskOpportunityVerdictRecord.c_session_id == c_session_id)
+            .order_by(CTaskOpportunityVerdictRecord.created_at_utc)
+        )
+        return result.scalars().all()
+
+
+class CPolicyDecisionRecordRepository(SqlAlchemyNeutralRepository[CPolicyDecisionRecord]):
+    model_type = CPolicyDecisionRecord
+
+    async def most_recent_for_session(self, c_session_id: UUID) -> CPolicyDecisionRecord | None:
+        """Phase 6b, S8-b: the increase-block feedback loop's own persisted state -- the most
+        recently written decision's ``increase_block_remaining`` IS
+        ``evidence.safety_increase_block_remaining`` for the NEXT task. No separate counter
+        column exists (same "the rows ARE the count" discipline as
+        CTaskOpportunityRecordRepository.count_for_session) -- ordered by created_at_utc, the
+        provenance column every record already carries, never a synthetic sequence."""
+        return await self.session.scalar(
+            select(CPolicyDecisionRecord)
+            .where(CPolicyDecisionRecord.c_session_id == c_session_id)
+            .order_by(CPolicyDecisionRecord.created_at_utc.desc())
+            .limit(1)
+        )
+
+    async def list_chronological_for_session(self, c_session_id: UUID) -> Sequence[CPolicyDecisionRecord]:
+        """Phase 9a: the full, chronologically-ordered decision trajectory for a session --
+        ``derive_session_aggregate``'s own ``adaptation_decisions`` input (its own
+        ``_decide_difficulty_trend`` reads ``decisions[0]``/``decisions[-1]`` under the assumption
+        the list is in real decision order). Ordered by ``created_at_utc``, the same provenance
+        column ``most_recent_for_session`` already orders by.
+
+        UPDATED (Batch 2, correcting the register-reconciliation batch's own claim above, which
+        this note replaces rather than deletes): ``task_service.submit_action`` now calls
+        ``adaptation_service.decide_and_persist_adaptation`` on its correct-answer path, so this
+        table is no longer written by nothing under ``app/`` -- for any session that exists (still
+        only a ``smoke_mode=True``/direct-call session; production session creation still refuses
+        unconditionally, X2-3), this will return a non-empty, real list once at least one task has
+        been answered correctly. ``derive_and_persist_session_aggregate`` itself remains
+        unreachable regardless (``_AGGREGATION_INPUTS_AVAILABLE = False``, aggregation_service.py,
+        untouched by this batch) -- the pinned ``derive_session_aggregate``'s own tolerance for an
+        empty decision list (``difficulty_trend`` falls back to ``"stable"``,
+        ``current_difficulty_level`` to 1, an honest "no decisions occurred," not a fabrication)
+        is therefore no longer the ONLY case this list can be seen in, but is still the only case
+        aggregation itself can currently reach."""
+        result = await self.session.execute(
+            select(CPolicyDecisionRecord)
+            .where(CPolicyDecisionRecord.c_session_id == c_session_id)
+            .order_by(CPolicyDecisionRecord.created_at_utc)
+        )
+        return result.scalars().all()
+
+
+class CSafetyEventRecordRepository(SqlAlchemyNeutralRepository[CSafetyEventRecord]):
+    model_type = CSafetyEventRecord
+
+
+class CScaffoldEventRecordRepository(SqlAlchemyNeutralRepository[CScaffoldEventRecord]):
+    model_type = CScaffoldEventRecord
 
 
 class SessionEventRepository(SqlAlchemyNeutralRepository[SessionEvent]):

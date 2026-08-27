@@ -1,0 +1,8 @@
+{
+  "checksum_sha256": "2b75d82c53b8556efe3c31b4394f73f58654165a9431555b402c0b3a8a2f0b26",
+  "contract_version": "v1",
+  "generation_config_smoke_gate": "assert_generation_config_permitted(config, smoke_mode=True) called once before generation and passed; the identical config is asserted (by the drift test, not this script) to raise GenerationConfigNotPermittedError under smoke_mode=False, proving parameter_source_status is genuinely disallowed outside smoke mode for this content, not merely that a boolean was passed",
+  "master_seed": 0,
+  "source": "component_c_generator.tasks.registry (installed wheel) via scripts/generate_c_prompt_exemplars.py",
+  "wheel_version": "0.1.0+c3.09267ab"
+}

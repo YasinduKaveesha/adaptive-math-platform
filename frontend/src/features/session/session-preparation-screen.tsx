@@ -419,7 +419,7 @@ export function SessionPreparationScreen() {
           </Pressable>
         </View>
 
-        <LearnerTabBar activeHomePressEnabled activeTab="home" />
+        <LearnerTabBar activeHomePressEnabled activeTab="home" playEnabled />
       </View>
     </SafeAreaView>
   );

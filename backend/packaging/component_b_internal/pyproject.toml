@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "upadya-component-b-live-engine"
-version = "0.1.0+bf4.09267ab"
+version = "0.1.0+bf5.09267ab"
 description = "Minimal live-safe Component B engine closure for the Upadya backend (BE3 packaging; no adapter wiring)"
 requires-python = ">=3.11,<3.12"
 dependencies = [
@@ -14,6 +14,6 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["component_b_generator*", "models*"]
+include = ["component_b_generator*", "models*", "validators*"]
 namespaces = false
 

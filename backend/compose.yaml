@@ -36,6 +36,46 @@ services:
     init: true
     security_opt: ["no-new-privileges:true"]
 
+  # 2026-08-27, cross-cutting test-isolation fix (buildLog2.md, "the entire test suite shares the
+  # dev database" entry). Every `isolated_database()` test helper and Alembic's own env.py read
+  # `get_settings().database_url` -- the SAME connection string `api` uses. Six migration-
+  # reversibility tests (one per backend phase) downgrade the schema and re-upgrade it, which
+  # against a shared database means every real account, classroom, and Component B/C row gets
+  # dropped and recreated empty on every full suite run. `api-test` is `api` with nothing changed
+  # except `DATABASE_URL`, pointed at `upadya_test` -- a distinct database on the SAME Postgres
+  # server (created once via `CREATE DATABASE upadya_test OWNER upadya;`; Alembic will migrate it
+  # to head on first use, the same way 22 test files already call `alembic upgrade head` ad hoc).
+  # `profiles: ["test"]` keeps it from ever starting under a plain `docker compose up` -- it exists
+  # to be `docker compose run --rm --no-deps api-test <command>`, never a long-running service, so
+  # it carries no ports/healthcheck/restart policy of its own.
+  #
+  # THE CANONICAL TEST INVOCATION IS NOW:
+  #   docker compose build api
+  #   docker compose run --rm --no-deps api-test python -m pytest -q
+  # `docker compose run --rm --no-deps api python -m pytest -q` (the old form, still written in
+  # several historical documents) now runs the suite against the DEV database again -- it will
+  # work, and it will silently destroy real dev data exactly as before. Do not use it.
+  api-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: upadya-backend:be1-batch3
+    profiles: ["test"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      BACKEND_CODE_VERSION: ${BACKEND_CODE_VERSION:-0.1.0-be1.3}
+      DATABASE_URL: postgresql://upadya:local-development-only@db:5432/upadya_test
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER:-}
+      SUPABASE_JWT_AUDIENCE: ${SUPABASE_JWT_AUDIENCE:-}
+      SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL:-}
+      SUPABASE_JWKS_CACHE_TTL_SECONDS: ${SUPABASE_JWKS_CACHE_TTL_SECONDS:-300}
+    depends_on:
+      db:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+
   db:
     image: postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74
     environment:

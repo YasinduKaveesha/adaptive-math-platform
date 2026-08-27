@@ -2,6 +2,7 @@ import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 
+import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
 import { colors, radius, spacing } from '@/src/theme/tokens';
 
 const tabArtwork = {
@@ -25,9 +26,19 @@ export function LearnerTabBar({
   playEnabled?: boolean;
 }) {
   const compact = useWindowDimensions().height < 760;
+  const { requestPlay } = useAdventureCharge();
 
   return (
     <View style={[styles.bottomNav, compact && styles.bottomNavCompact]}>
+      <TabItem
+        active={activeTab === 'play'}
+        accessibilityHint={playEnabled ? 'Opens adaptive games' : 'Adaptive games will be available with Component C'}
+        disabled={!playEnabled}
+        label="Play"
+        onPress={requestPlay}
+        selectedSource={tabArtwork.playSelected}
+        source={tabArtwork.play}
+      />
       <TabItem
         active={activeTab === 'home'}
         label="Home"
@@ -35,15 +46,6 @@ export function LearnerTabBar({
         pressWhenActive={activeHomePressEnabled}
         selectedSource={tabArtwork.homeSelected}
         source={tabArtwork.home}
-      />
-      <TabItem
-        active={activeTab === 'play'}
-        accessibilityHint={playEnabled ? 'Opens adaptive games' : 'Adaptive games will be available with Component C'}
-        disabled={!playEnabled}
-        label="Play"
-        onPress={() => router.replace('/(learner)/play')}
-        selectedSource={tabArtwork.playSelected}
-        source={tabArtwork.play}
       />
       <TabItem
         active={activeTab === 'profile'}

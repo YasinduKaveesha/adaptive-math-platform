@@ -7,10 +7,10 @@
   "database_schema_revision": "UNRESOLVED_PLACEHOLDER_BE3B_TEST_FIXTURE",
   "generator": {
     "source_identifier": "upadya-component-b-live-engine",
-    "source_path": "provenance/wheels/upadya_component_b_live_engine-0.1.0+bf4.09267ab-py3-none-any.whl",
+    "source_path": "provenance/wheels/upadya_component_b_live_engine-0.1.0+bf5.09267ab-py3-none-any.whl",
     "checksum": {
       "algorithm": "sha256",
-      "value": "148d03e7fd3f7ec075ee9b97effd3955ef013cee583baf19cc90686381537d06"
+      "value": "ebcd287bf89737645d27af0f812f357db957f343140a5599a8ff731690a88402"
     },
     "interface_version": "be3-1.0"
   },

@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Crypto from 'expo-crypto';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react-native';
@@ -11,6 +12,9 @@ import { AppText } from '@/src/components/app-text';
 import { ScreenShell } from '@/src/components/screen-shell';
 import { readPublicConfig } from '@/src/config/env';
 import { colors, radius, spacing } from '@/src/theme/tokens';
+import { firstNameOf } from '@/src/utils/display-name';
+
+const brandWordmark = require('../../../assets/images/mathmingo-header.png');
 
 export function FirstTimeWelcomeScreen() {
   const palette = colors;
@@ -63,16 +67,16 @@ export function FirstTimeWelcomeScreen() {
   return (
     <ScreenShell centered>
       <View style={styles.content}>
-        <View style={[styles.iconCircle, { backgroundColor: palette.primarySoft }]}>
-          <Ionicons color={palette.textPrimary} name="sparkles" size={42} />
-        </View>
+        <Image
+          accessibilityLabel="MathMingo"
+          contentFit="contain"
+          source={brandWordmark}
+          style={styles.brandWordmark}
+        />
         <AppText align="center" variant="title">
-          Hi{trimmedName ? `, ${trimmedName}` : ''}!
+          Hi{trimmedName ? `, ${firstNameOf(trimmedName)}` : ''}!
         </AppText>
         <AppText align="center" variant="subtitle">Welcome to MathMingo</AppText>
-        <AppText align="center" style={{ color: palette.textSecondary }}>
-          Before your first lesson, let&apos;s make sure we have your name right.
-        </AppText>
 
         <TextInput
           accessibilityLabel="Your name"
@@ -150,13 +154,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   errorText: { flex: 1, fontSize: 15, lineHeight: 22 },
-  iconCircle: {
-    alignItems: 'center',
-    borderRadius: radius.xl,
-    height: 88,
-    justifyContent: 'center',
-    width: 88,
-  },
+  brandWordmark: { aspectRatio: 1916 / 821, height: 136 },
   input: {
     alignSelf: 'stretch',
     borderRadius: radius.md,

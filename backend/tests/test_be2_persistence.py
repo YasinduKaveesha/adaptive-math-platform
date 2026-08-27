@@ -49,6 +49,20 @@ EXPECTED_TABLES = {
     "b_hint_events",
     # BE4e (BEplan §9 BE4.6) — private, immutable session-aggregate + skill-certification results.
     "b_session_aggregate_results", "b_skill_certification_results",
+    # Component C Phase 2 — mirrors b_runtime_bundle_records for Component C's own wheel pin.
+    "c_runtime_bundle_records",
+    # Component C Phase 3a (v3.0 §11 Phase 3) — the ten tables.
+    "c_sessions", "c_task_opportunities", "c_task_instances", "c_gameplay_events",
+    "c_task_opportunity_summaries", "c_session_aggregate_results", "c_learner_local_state",
+    "c_policy_decisions", "c_safety_events", "c_scaffold_events",
+    # Component C backend remediation, batch 4 (Amendment A-1) — the durable exclusion-reason /
+    # supersession-chain table, created by its own migration (20260816_0007).
+    "c_task_opportunity_verdicts",
+    # Component C batch 9c-1a (Master Build Plan v3.0 §11 Phase 9; 9b_9c plan Track 9c, "9c-1 —
+    # the tables and the routing") — the two shared B/C outbox tables, deliberately unprefixed
+    # (shared infrastructure, not shared ownership — owner condition 1), created by their own
+    # migration (20260816_0008).
+    "outbox_events", "contract_deliveries",
 }
 COMMON_COLUMNS = {
     "created_at_utc", "updated_at_utc", "actor_user_id", "system_actor", "request_id",

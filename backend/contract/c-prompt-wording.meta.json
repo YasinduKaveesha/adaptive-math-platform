@@ -1,0 +1,5 @@
+{
+  "checksum_sha256": "2362d9ec1a7d42afef33c737e4a59d050efa051dc34d9cb77dd49283fb6733d8",
+  "contract_version": "v1",
+  "source": "app.domain.live_engine_c.prompt_wording.PROMPT_TEXT_BY_TEMPLATE (authored content, not the installed wheel) via scripts/generate_c_prompt_wording.py"
+}

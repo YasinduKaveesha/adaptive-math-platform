@@ -1,8 +1,19 @@
 import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 import * as Crypto from 'expo-crypto';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import Animated, {
+  Easing,
+  ZoomIn,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type {
@@ -15,10 +26,12 @@ import { ApiClientError } from '@/src/api/errors';
 import type { AttemptResponse } from '@/src/api/generated/openapi-types';
 import { useAuth } from '@/src/auth/auth-context';
 import { AppText } from '@/src/components/app-text';
+import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
 import { readPublicConfig } from '@/src/config/env';
 import {
   canAdvance,
   canRequestHint,
+  clampCompleted,
   classifyAttemptOutcome,
   classifyFailure,
   failureRequestId,
@@ -47,6 +60,11 @@ import {
   savePendingCommand,
 } from '@/src/features/session/session-command-store';
 import { SessionResultsScreen } from '@/src/features/session/session-results-screen';
+import {
+  accentForSkill,
+  pickBackgroundGradientColors,
+  pillColorsForSkill,
+} from '@/src/features/session/session-skill-accents';
 import { PromptVisual } from '@/src/features/session/prompt-visuals/prompt-visual';
 import { resolvePromptVisual } from '@/src/features/session/prompt-visuals/registry';
 import { encodeSubmittedValue } from '@/src/features/session/renderers/encode';
@@ -75,6 +93,25 @@ type Phase =
   | { kind: 'unrenderable'; requestId: string }
   | { kind: 'failure'; failure: SessionFailure; requestId: string | null };
 
+const EXIT_HIT_SLOP = { bottom: 8, left: 8, right: 8, top: 8 };
+
+const TASK_PANEL_BORDER_WIDTH = 4;
+// The footer's real target gap is now the live-measured pill-bottom-to-prompt-card-top distance
+// (`measuredTopGap`, computed from onLayout in the render body — see its own comment), not a
+// static token: the pill's rendered height depends on font metrics this file does not control, so
+// only an actual measurement can match it exactly, as requested. This is only the fallback used
+// for the one frame before that measurement exists, kept close to the old (pre-measurement) value
+// so there is no visible jump once the real measurement lands.
+const TASK_FOOTER_BOTTOM_GAP = (spacing.smPlus + TASK_PANEL_BORDER_WIDTH) * 2;
+
+// Appends an alpha channel to a plain 7-char `#rrggbb` colour (every colour
+// `pickBackgroundGradientColors` can return is exactly this shape). `alphaHex` is a 2-digit hex
+// byte, e.g. `'33'` for ~20% opacity — this is what keeps the background gradient "faded" rather
+// than the game-type colours appearing at full saturation behind the card.
+function withAlpha(hex: string, alphaHex: string): string {
+  return `${hex}${alphaHex}`;
+}
+
 const failureCopy: Record<SessionFailure, { title: string; detail: string }> = {
   authentication: { title: 'Sign-in needed', detail: 'Ask a grown-up to help you sign in again.' },
   conflict: { title: 'One moment', detail: "Something changed — let's take another look." },
@@ -84,6 +121,7 @@ const failureCopy: Record<SessionFailure, { title: string; detail: string }> = {
 
 export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
   const { getAccessToken } = useAuth();
+  const { awardForSession } = useAdventureCharge();
   const configResult = useMemo(() => readPublicConfig(), []);
   const api = useMemo(
     () => (configResult.config ? createComponentBApi(configResult.config) : null),
@@ -100,6 +138,15 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
   // report it — showing nothing is more honest than seeding a client-side guess.
   const [progress, setProgress] = useState<SessionProgress | null>(null);
   const [advancing, setAdvancing] = useState(false);
+  // Measured via onLayout rather than computed from static style tokens: the skill pill's
+  // rendered height depends on font metrics this file does not control, so matching "the same gap"
+  // the user asked for (pill-bottom-to-prompt-card-top, reused as the footer's own bottom gap)
+  // exactly means measuring the real boxes, not guessing at the pill's size. All three are in the
+  // same coordinate space (taskPanel-relative, pre-scroll layout position — see the JSX comments
+  // where each is set) so they combine with plain arithmetic, no scroll-offset correction needed.
+  const [pillBottom, setPillBottom] = useState<number | null>(null);
+  const [scrollWrapperTop, setScrollWrapperTop] = useState<number | null>(null);
+  const [promptCardTop, setPromptCardTop] = useState<number | null>(null);
   const mountedRef = useRef(true);
   const runningRef = useRef(false);
   // client_elapsed_ms is telemetry only and is never read for correctness (server timestamps are
@@ -132,7 +179,15 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     // The attempt is recorded server-side; the local recovery record has done its job.
     await clearPendingCommand();
     if (!mountedRef.current) return;
-    setOutcome(classifyAttemptOutcome(attempt));
+    const classified = classifyAttemptOutcome(attempt);
+    setOutcome(classified);
+    // A gentle buzz only — feedback, not judgement. Never awaited: haptics failing (no vibration
+    // hardware, permission denied) must never block the outcome from showing.
+    void Haptics.notificationAsync(
+      classified === 'correct'
+        ? Haptics.NotificationFeedbackType.Success
+        : Haptics.NotificationFeedbackType.Warning,
+    );
   }, []);
 
   /**
@@ -432,6 +487,14 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     };
   }, [api, presentOpportunity]);
 
+  // Charges the adventure battery exactly once per genuinely completed Component B session --
+  // `phase.kind === 'completed'` is the same real, backend-driven completion state
+  // SessionResultsScreen renders from, not a client-side guess. awardForSession is idempotent per
+  // sessionId, so re-renders of this same completed screen never double-award.
+  useEffect(() => {
+    if (phase.kind === 'completed') awardForSession(sessionId);
+  }, [awardForSession, phase.kind, sessionId]);
+
   const goHome = useCallback(() => router.replace('/(learner)/home'), []);
 
   /**
@@ -445,6 +508,20 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     await clearActiveSessionId();
     goHome();
   }, [goHome]);
+
+  // Computed here, above every early `return`, because it is a Hook (`useMemo`) — Hooks must run
+  // on every render in the same order, so it cannot live down in the 'question'-only render path
+  // below with the rest of that phase's derived values. `null` outside the 'question' phase (there
+  // is no card, hence no accent to avoid) is deliberately what skips re-picking: the dependency
+  // array only changes, and this only re-runs pickBackgroundGradientColors, on an actual new
+  // question (a change in itemOpportunityId), never on an unrelated re-render of this screen.
+  const currentQuestionAccent = phase.kind === 'question' ? accentForSkill(phase.plan.skillId) : null;
+  const currentOpportunityId = phase.kind === 'question' ? phase.plan.itemOpportunityId : null;
+  const gradientColors = useMemo(
+    () =>
+      currentQuestionAccent ? pickBackgroundGradientColors(currentQuestionAccent) : (['#ffffff', '#ffffff'] as const),
+    [currentQuestionAccent, currentOpportunityId],
+  );
 
   if (phase.kind === 'loading') {
     return (
@@ -524,25 +601,132 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
   const promptVisual = resolvePromptVisual(plan.promptPayload);
   const passiveVisual = promptVisual?.kind === 'selectable-pool' ? null : promptVisual;
   const poolSize = promptVisual?.kind === 'selectable-pool' ? promptVisual.poolSize : undefined;
+  // Presentation only, read straight off the wire id — see session-skill-accents.ts. Falls back to
+  // a neutral surface colour for a skill id this table has not been taught, never a reason to
+  // change what question is shown.
+  const accent = accentForSkill(plan.skillId);
+  const pillColors = pillColorsForSkill(plan.skillId);
+  // The gap the footer reproduces: pill-bottom to prompt-card-top, from the three onLayout
+  // measurements above. `null` until all three have reported at least once (first paint, before
+  // layout runs) — the footer falls back to TASK_FOOTER_BOTTOM_GAP for that one frame rather than
+  // collapsing to zero.
+  const measuredTopGap =
+    pillBottom !== null && scrollWrapperTop !== null && promptCardTop !== null
+      ? scrollWrapperTop + promptCardTop - pillBottom
+      : null;
+  const footerBottomGap = measuredTopGap ?? TASK_FOOTER_BOTTOM_GAP;
+  const footerPaddingBottom = Math.max(0, footerBottomGap - TASK_PANEL_BORDER_WIDTH - spacing.md);
 
   return (
-    <SessionFrame>
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        <View style={styles.headerRow}>
-          <View style={styles.skillPill}>
-            <Ionicons color={colors.primaryShadow} name="sparkles" size={16} />
-            <AppText style={styles.skillText}>{plan.skillLabel || 'Maths'}</AppText>
+    <SafeAreaView style={styles.taskSafeArea}>
+      {/* Faded — `withAlpha` at low opacity, not the raw saturated colours — and re-picked per
+          question rather than fixed, from two of the five game-type colours the home screen's own
+          path uses (see pickBackgroundGradientColors). `colors.background` stays as this
+          SafeAreaView's own backgroundColor (styles.taskSafeArea) underneath, so the gradient is a
+          wash over that base rather than a replacement for it. Rotates continuously — see
+          RotatingGradientBackground. */}
+      <RotatingGradientBackground
+        colors={[withAlpha(gradientColors[0], '33'), withAlpha(gradientColors[1], '33')]}
+      />
+      <View style={styles.taskCanvas}>
+        <View style={[styles.taskPanel, { borderColor: accent }]}>
+          {/* Floats above the flow rather than taking a row of its own, matching c-session's own
+              exit control. Leaving mid-question goes straight home without clearing the active
+              session id (that is `exitSession`'s job, reached only from a genuinely finished
+              session) — the server keeps the opportunity open, so returning through /prepare finds
+              it resumable rather than abandoned.
+              The skill pill sits on this same row rather than its own, so it reads as navigation
+              chrome alongside the exit control instead of scrolling away with the question. It is
+              centred on the CARD's own x-axis (`left: 0, right: 0` spans the full card width, not
+              just the space left after the exit button) via absolute positioning, so it stays
+              centred regardless of the exit button's width. */}
+          <View style={styles.taskHeaderRow}>
+            <Pressable
+              accessibilityLabel="Leave session"
+              accessibilityRole="button"
+              hitSlop={EXIT_HIT_SLOP}
+              onPress={goHome}
+              style={({ pressed }) => [styles.taskExitButton, pressed && styles.pressed]}>
+              <Ionicons color={colors.textSecondary} name="close" size={22} />
+            </Pressable>
           </View>
-          {/* Straight from the server's own numbers — never a client-side counter, and never a
-              client-side bound. Absent until the first advance reports them. */}
-          {progress ? (
-            <AppText style={styles.progressText}>
-              {`${progress.completed} of ${progress.totalBound}`}
-            </AppText>
+          {/* The hint control's other half: X on the top-left, this on the top-right, same circle
+              size (44) and same row. Only rendered while a hint can still be requested for this
+              opportunity — once hints close (see canRequestHint), the informational
+              `hintClosed` copy inline below is the only trace of it, not a dead button up here. */}
+          {canRequestHint(hintStateFor(hints, plan.itemOpportunityId)) ? (
+            <View style={styles.taskHintRow}>
+              <Pressable
+                accessibilityLabel={
+                  hintStateFor(hints, plan.itemOpportunityId).received.length > 0
+                    ? 'Another hint'
+                    : 'I need a hint'
+                }
+                accessibilityRole="button"
+                accessibilityState={{ disabled: requestingHint }}
+                disabled={requestingHint}
+                hitSlop={EXIT_HIT_SLOP}
+                onPress={() => void requestHint()}
+                style={({ pressed }) => [
+                  styles.taskExitButton,
+                  styles.taskHintButton,
+                  pressed && !requestingHint && styles.pressed,
+                ]}>
+                {requestingHint ? (
+                  <ActivityIndicator color={colors.accentBlue} size="small" />
+                ) : (
+                  <Ionicons color={colors.accentBlue} name="bulb-outline" size={22} />
+                )}
+              </Pressable>
+            </View>
           ) : null}
-        </View>
+          {/* `onLayout` here — not measured from static tokens — is the top half of the footer's
+              gap measurement; see `measuredTopGap`, above. This row's own height already equals
+              the pill's rendered height (nothing else in it adds vertical space), so
+              `layout.y + layout.height` is exactly the pill's bottom edge, in taskPanel-relative
+              coordinates (this row is a direct child of taskPanel). */}
+          <View
+            onLayout={(event) =>
+              setPillBottom(event.nativeEvent.layout.y + event.nativeEvent.layout.height)
+            }
+            pointerEvents="none"
+            style={styles.taskSkillPillRow}>
+            <View style={[styles.skillPill, { backgroundColor: pillColors.soft }]}>
+              <Ionicons color={pillColors.text} name="sparkles" size={16} />
+              <AppText style={[styles.skillText, { color: pillColors.text }]}>
+                {plan.skillLabel || 'Maths'}
+              </AppText>
+            </View>
+          </View>
+      {/* Wraps just the scrolling question/answer/hints area — not the header row above or the
+          footer below — so the outcome popup's blur (an absolutely positioned sibling of the
+          ScrollView, sized to fill this wrapper) only ever covers the now-stale question content,
+          never the exit/hint corner buttons or the still-live advance/try-again button.
+          Its own `onLayout` is the other half of `measuredTopGap`'s coordinate conversion: this
+          wrapper is a normal-flow direct child of taskPanel, so its `layout.y` is exactly where
+          the ScrollView's (unscrolled) content-space y=0 sits in taskPanel-relative coordinates. */}
+      <View onLayout={(event) => setScrollWrapperTop(event.nativeEvent.layout.y)} style={styles.taskScrollWrapper}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+        style={styles.taskScroll}>
+        {/* Straight from the server's own numbers — never a client-side counter, and never a
+            client-side bound. Absent until the first advance reports them, so the bar is skipped
+            entirely rather than seeded with a guess. */}
+        {progress ? <ProgressBar progress={progress} /> : null}
 
-        <View style={styles.promptCard}>
+        {/* `onLayout` reports this card's y in the ScrollView's own content space — pre-scroll
+            layout position, not the visually-scrolled position — which is exactly what
+            `measuredTopGap` adds to `scrollWrapperTop` to land back in taskPanel-relative
+            coordinates. */}
+        {/* Doubles the gap to the progress bar above it specifically, not every gap in the scroll:
+            `scroll`'s own `gap: spacing.md` already spaces every direct child uniformly, so an
+            extra `spacing.md` of margin here — only when a progress bar is actually rendered above
+            it — brings the total to 2x just for this one pair, leaving every other gap in the
+            column untouched. */}
+        <View
+          onLayout={(event) => setPromptCardTop(event.nativeEvent.layout.y)}
+          style={[styles.promptCard, progress && styles.promptCardAfterProgress]}>
           <AppText style={styles.stem}>{plan.stem}</AppText>
           {/* FE-3g — the concrete representation the question refers to. `prompt` carries content
               keys beyond `stem`, and rendering only the stem left 7 of 14 Grade 2 templates
@@ -556,104 +740,166 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
           ) : null}
         </View>
 
-        {answer?.kind === 'choice' && plan.spec.kind === 'choice' ? (
-          <ChoiceGrid
-            disabled={answeringDisabled}
-            onChange={setAnswer}
-            spec={plan.spec}
-            state={answer}
-          />
-        ) : null}
-        {answer?.kind === 'free-entry' && plan.spec.kind === 'free-entry' ? (
-          <FreeEntry
-            disabled={answeringDisabled}
-            onChange={setAnswer}
-            spec={plan.spec}
-            state={answer}
-          />
-        ) : null}
-        {answer?.kind === 'count-selection' && plan.spec.kind === 'count-selection' ? (
-          <CountSelection
-            disabled={answeringDisabled}
-            // Remount per question so the pool's local selection state cannot survive an advance.
-            // (The surface also clears itself when the answer is reseeded, which is what "Try again"
-            // does without changing the opportunity — both paths matter.)
-            key={plan.itemOpportunityId}
-            onChange={setAnswer}
-            poolSize={poolSize}
-            spec={plan.spec}
-            state={answer}
-          />
-        ) : null}
+        {/* `flex: 1` inside the scroll's own flexGrow container: this block claims whatever
+            vertical space is left over between the prompt card above and the hints/outcome/footer
+            below, and `justifyContent: 'center'` centres the answer pad within exactly that space
+            — between the question card and the submit button, as requested — rather than the pad
+            sitting flush under the prompt with a large empty gap below it. When hints or an
+            outcome ARE present, they still render below in normal flow; this block simply gets
+            whatever room remains above them. */}
+        <View style={styles.answerCenter}>
+          {answer?.kind === 'choice' && plan.spec.kind === 'choice' ? (
+            <ChoiceGrid
+              disabled={answeringDisabled}
+              onChange={setAnswer}
+              spec={plan.spec}
+              state={answer}
+            />
+          ) : null}
+          {answer?.kind === 'free-entry' && plan.spec.kind === 'free-entry' ? (
+            <FreeEntry
+              disabled={answeringDisabled}
+              onChange={setAnswer}
+              spec={plan.spec}
+              state={answer}
+            />
+          ) : null}
+          {answer?.kind === 'count-selection' && plan.spec.kind === 'count-selection' ? (
+            <CountSelection
+              disabled={answeringDisabled}
+              // Remount per question so the pool's local selection state cannot survive an advance.
+              // (The surface also clears itself when the answer is reseeded, which is what "Try again"
+              // does without changing the opportunity — both paths matter.)
+              key={plan.itemOpportunityId}
+              onChange={setAnswer}
+              poolSize={poolSize}
+              spec={plan.spec}
+              state={answer}
+            />
+          ) : null}
+        </View>
 
         {/* Hints sit below the answer surface and never gate it: the child can answer at any
-            point, with or without asking for help. Every hint the child has been given stays on
-            screen — L2 elaborates on L1, so replacing would take away the scaffold. */}
-        {hintView.received.map((hint) => (
-          <View key={hint.hint_level} style={styles.hintCard}>
+            point, with or without asking for help. Only the MOST RECENT hint shows — requesting
+            hint 2 replaces hint 1 on screen rather than stacking both (the earlier design kept
+            every level visible at once; this is a deliberate change from that, at the user's own
+            request). `hintView.received` is already ordered L1→L2→L3 (see hintStateFor), so the
+            last entry is always the highest level received so far. */}
+        {hintView.received.length > 0 ? (
+          <View
+            key={hintView.received[hintView.received.length - 1].hint_level}
+            style={styles.hintCard}>
             <View style={styles.hintHeader}>
               <Ionicons color={colors.accentBlue} name="bulb" size={18} />
-              <AppText style={styles.hintLevel}>Hint {hint.hint_level}</AppText>
+              <AppText style={styles.hintLevel}>
+                Hint {hintView.received[hintView.received.length - 1].hint_level}
+              </AppText>
             </View>
-            <AppText>{hint.content}</AppText>
+            <AppText style={styles.hintContent}>
+              {hintView.received[hintView.received.length - 1].content}
+            </AppText>
           </View>
-        ))}
+        ) : null}
 
-        {canRequestHint(hintView) ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ disabled: requestingHint }}
-            disabled={requestingHint}
-            onPress={() => void requestHint()}
-            style={({ pressed }) => [styles.hintButton, pressed && styles.pressed]}>
-            {requestingHint ? (
-              <ActivityIndicator color={colors.accentBlue} size="small" />
-            ) : (
-              <>
-                <Ionicons color={colors.accentBlue} name="bulb-outline" size={20} />
-                <AppText style={styles.hintButtonText}>
-                  {hintView.received.length > 0 ? 'ANOTHER HINT' : 'I NEED A HINT'}
-                </AppText>
-              </>
-            )}
-          </Pressable>
-        ) : (
+        {/* The request control itself now lives in the card's top-right corner (see taskHintRow,
+            above); this is only the closed-door copy for once hints run out, since that message
+            has nowhere else to live once the corner button disappears. */}
+        {canRequestHint(hintView) ? null : (
           <AppText style={styles.hintClosed}>{HINTS_UNAVAILABLE_COPY}</AppText>
         )}
 
-        {view ? (
-          <View
-            style={[
-              styles.outcomeCard,
-              outcome === 'correct' && styles.outcomeCorrect,
-              outcome === 'incorrect' && styles.outcomeIncorrect,
-            ]}>
-            <AppText style={styles.outcomeTitle}>{view.title}</AppText>
-            <AppText style={styles.muted}>{view.detail}</AppText>
-          </View>
-        ) : null}
-
-        {/* Once an attempt is on record the child can always move on, including after a wrong
-            answer — trying again is offered, never required. */}
-        {view?.canTryAgain ? <PrimaryButton label="TRY AGAIN" onPress={tryAgain} /> : null}
-        {view ? (
-          <PrimaryButton
-            busy={advancing}
-            label="NEXT QUESTION"
-            onPress={() => void advance()}
-            variant={view.canTryAgain ? 'secondary' : 'primary'}
-          />
-        ) : null}
-        {!view ? (
-          <PrimaryButton
-            busy={submitting}
-            disabled={!canSubmit}
-            label="CHECK MY ANSWER"
-            onPress={() => void submitAnswer()}
-          />
-        ) : null}
       </ScrollView>
-    </SessionFrame>
+      {/* The outcome popup: an absolutely positioned overlay (`outcomeOverlay`'s inset-0) sized to
+          fill `taskScrollWrapper` exactly, since that wrapper — not `taskPanel` — is its nearest
+          `position: 'relative'` ancestor. It therefore sits precisely over the stale question
+          content and nowhere else: never the header row above or the footer below.
+          `pointerEvents="box-none"` on the outer layers lets any tap that lands outside the popup
+          itself (there is nothing to tap in the blurred question behind it anyway) fall through
+          rather than swallowing input the rest of the card never offered. */}
+      {view ? (
+        <View pointerEvents="box-none" style={styles.outcomeOverlay}>
+          <BlurView intensity={40} style={styles.outcomeOverlay} tint="light" />
+          <View pointerEvents="box-none" style={styles.outcomePopupCenter}>
+            <Animated.View
+              entering={ZoomIn.duration(280).springify().damping(14)}
+              // Re-keyed per opportunity: an outcome from the previous question must never appear
+              // to "carry over" its entrance animation into this one.
+              key={plan.itemOpportunityId}
+              // Ternary, not two `&&` branches: a `timeout` outcome must land on one of the two
+              // variants (matching the icon and text colour just below, which already do this),
+              // never on neither — `&&` alone left `timeout` with no shadowColor override at all,
+              // which fell back to the RN default (opaque black), rendering as a dark halo instead
+              // of a coloured glow.
+              style={[
+                styles.outcomePopup,
+                outcome === 'correct' ? styles.outcomeCorrect : styles.outcomeIncorrect,
+              ]}>
+              <View
+                style={[
+                  styles.outcomeIcon,
+                  outcome === 'correct' ? styles.outcomeIconCorrect : styles.outcomeIconIncorrect,
+                ]}>
+                <Ionicons
+                  color={colors.primaryForeground}
+                  name={outcome === 'correct' ? 'checkmark' : 'heart-outline'}
+                  size={30}
+                />
+              </View>
+              <AppText
+                align="center"
+                style={[
+                  styles.outcomeTitle,
+                  outcome === 'correct' ? styles.outcomeTextCorrect : styles.outcomeTextIncorrect,
+                ]}>
+                {view.title}
+              </AppText>
+              {/* Empty for 'incorrect' (outcomeView) — no detail line to render there, rather than
+                  an empty AppText taking up its line height for nothing. */}
+              {view.detail ? (
+                <AppText
+                  align="center"
+                  style={[
+                    styles.muted,
+                    outcome === 'correct' ? styles.outcomeTextCorrect : styles.outcomeTextIncorrect,
+                  ]}>
+                  {view.detail}
+                </AppText>
+              ) : null}
+            </Animated.View>
+          </View>
+        </View>
+      ) : null}
+      </View>
+          {/* Its own fixed box below the scrolling content, not part of it — the button's gap to
+              the card's bottom edge (taskFooter's padding + the card's own border) is always
+              exactly `footerBottomGap` (the measured pill-bottom-to-prompt-card-top distance),
+              the same whether the question above has one line of hints or five, a choice grid or
+              a pool of objects. Living inside the ScrollView would make that gap depend on how
+              much content happened to be above it. */}
+          <View style={[styles.taskFooter, { paddingBottom: footerPaddingBottom }]}>
+            {/* Once an attempt is on record the child can always move on, including after a wrong
+                answer — trying again is offered, never required. */}
+            {view?.canTryAgain ? <PrimaryButton label="TRY AGAIN" onPress={tryAgain} /> : null}
+            {view ? (
+              <PrimaryButton
+                busy={advancing}
+                label="NEXT QUESTION"
+                onPress={() => void advance()}
+                variant={view.canTryAgain ? 'secondary' : 'primary'}
+              />
+            ) : null}
+            {!view ? (
+              <PrimaryButton
+                busy={submitting}
+                disabled={!canSubmit}
+                label="CHECK MY ANSWER"
+                onPress={() => void submitAnswer()}
+              />
+            ) : null}
+          </View>
+        </View>
+      </View>
+    </SafeAreaView>
   );
 }
 
@@ -662,6 +908,98 @@ function SessionFrame({ children }: { children: React.ReactNode }) {
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.canvas}>{children}</View>
     </SafeAreaView>
+  );
+}
+
+/**
+ * A slow, continuous clockwise rotation of the background gradient around the screen's own centre.
+ *
+ * The gradient is drawn onto a square child sized to the screen's own DIAGONAL (measured via
+ * onLayout, in real pixels — not a flat percentage guess): a screen-sized gradient rotated in
+ * place would sweep its corners outside the visible area at 45°/135°/etc and expose whatever is
+ * behind it there, and a fixed oversize like "200%" only happens to be enough in the dimension it
+ * was tuned against — for a tall, narrow phone screen, 200% of the (shorter) WIDTH is well short
+ * of the true diagonal, so the gradient's own edge became visible as a hard crop in two opposite
+ * corners exactly where the oversized box ran out. The diagonal of a `width × height` rectangle,
+ * `sqrt(width² + height²)`, is the minimal square side that still fully covers that rectangle at
+ * every rotation angle — anything smaller can crop a corner at some angle, anything larger just
+ * wastes more of the gradient's own colour transition on space that is never visible. Centred via
+ * `(width - diagonal) / 2` / `(height - diagonal) / 2` (computed pixel offsets, not `-50%`, since
+ * the child is no longer symmetric relative to the parent once sized to a measured diagonal rather
+ * than a percentage of the parent's own two dimensions). `transform: rotate` always spins a view
+ * around its own centre, and since this child's centre is (by construction) the same point as the
+ * screen's centre, "around the screen's centre" falls out of that for free. `null` until the first
+ * onLayout (nothing to size yet) renders nothing rather than a guessed box.
+ */
+function RotatingGradientBackground({ colors: gradientColors }: { colors: readonly [string, string] }) {
+  const rotation = useSharedValue(0);
+  const [screenSize, setScreenSize] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    // -1 repeats forever; `false` (no reverse) keeps every lap clockwise, never swinging back
+    // counter-clockwise the way a reversing repeat would on alternate laps.
+    rotation.value = withRepeat(withTiming(360, { duration: 45000, easing: Easing.linear }), -1, false);
+  }, [rotation]);
+
+  const spinStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
+
+  const diagonal = screenSize
+    ? Math.ceil(Math.sqrt(screenSize.width ** 2 + screenSize.height ** 2))
+    : 0;
+
+  return (
+    <View
+      onLayout={(event) =>
+        setScreenSize({
+          width: event.nativeEvent.layout.width,
+          height: event.nativeEvent.layout.height,
+        })
+      }
+      pointerEvents="none"
+      style={styles.taskGradientBackground}>
+      {screenSize ? (
+        <Animated.View
+          style={[
+            spinStyle,
+            {
+              height: diagonal,
+              left: (screenSize.width - diagonal) / 2,
+              position: 'absolute',
+              top: (screenSize.height - diagonal) / 2,
+              width: diagonal,
+            },
+          ]}>
+          <LinearGradient
+            colors={gradientColors}
+            end={{ x: 1, y: 1 }}
+            start={{ x: 0, y: 0 }}
+            style={styles.taskGradientFill}
+          />
+        </Animated.View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * The bar is presentational only: it reads `SessionProgress`, already clamped by
+ * `clampCompleted`, and never derives or guesses a count of its own.
+ */
+function ProgressBar({ progress }: { progress: SessionProgress }) {
+  const completed = clampCompleted(progress);
+  const fraction = progress.totalBound > 0 ? completed / progress.totalBound : 0;
+  return (
+    <View
+      accessibilityLabel={`${completed} of ${progress.totalBound} questions done`}
+      accessibilityRole="progressbar"
+      style={styles.progressRow}>
+      <View style={styles.progressTrack}>
+        <Animated.View
+          style={[styles.progressFill, { width: `${Math.round(fraction * 100)}%` }]}
+        />
+      </View>
+      <AppText style={styles.progressText}>{`${completed}/${progress.totalBound}`}</AppText>
+    </View>
   );
 }
 
@@ -689,7 +1027,7 @@ function PrimaryButton({
         styles.button,
         secondary && styles.buttonSecondary,
         (disabled || busy) && styles.buttonDisabled,
-        pressed && !disabled && !busy && styles.pressed,
+        pressed && !disabled && !busy && styles.buttonPressed,
       ]}>
       {busy ? (
         <ActivityIndicator color={secondary ? colors.primary : colors.primaryForeground} size="small" />
@@ -701,63 +1039,57 @@ function PrimaryButton({
 }
 
 const styles = StyleSheet.create({
+  answerCenter: { flex: 1, gap: spacing.md, justifyContent: 'center' },
+  // Matches c-session's own SubmitButton exactly (line-traversal-surface.tsx's `submitButton` /
+  // `submitButtonDisabled` / `submitButtonText` / `pressed`, reproduced rather than imported since
+  // none of the three is exported from that file — the same private-symbol situation its own
+  // header comment describes for reusing value-report-surface.tsx's shapes): flat fill, no border,
+  // no shadow, no press-down transform. `alignSelf: 'stretch'` and `borderRadius: radius.md` are
+  // kept from B's own layout (the card's buttons fill the footer's width; C's SUBMIT does not need
+  // to stretch itself since its container already sizes it), everything else in this block is C's.
   button: {
     alignItems: 'center',
     alignSelf: 'stretch',
     backgroundColor: colors.primary,
-    borderColor: colors.surface1,
     borderRadius: radius.md,
-    borderWidth: 2,
     justifyContent: 'center',
-    minHeight: 62,
+    minHeight: 56,
     paddingHorizontal: spacing.lg,
   },
   buttonDisabled: { opacity: 0.5 },
-  buttonSecondary: { backgroundColor: colors.surface1, borderColor: colors.primary },
+  buttonPressed: { opacity: 0.72 },
+  buttonSecondary: { backgroundColor: colors.surface1, borderColor: colors.primary, borderWidth: 2 },
   buttonTextSecondary: { color: colors.primary },
   buttonText: {
-    color: colors.primaryForeground,
+    color: colors.surface1,
     fontFamily: typography.fonts.bold,
-    fontSize: 17,
-    letterSpacing: typography.letterSpacing.button,
+    fontSize: typography.fontSize.lg,
   },
   canvas: { alignSelf: 'center', backgroundColor: colors.background, flex: 1, maxWidth: 500, width: '100%' },
   centered: { alignItems: 'center', flex: 1, gap: spacing.md, justifyContent: 'center', padding: spacing.lg },
-  hintButton: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: colors.secondarySoft,
-    borderColor: colors.secondary,
-    borderRadius: radius.pill,
-    borderWidth: 2,
-    flexDirection: 'row',
-    gap: spacing.sm,
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
-  },
-  hintButtonText: {
-    color: colors.secondaryForeground,
-    fontFamily: typography.fonts.bold,
-    fontSize: typography.fontSize.sm,
-    letterSpacing: typography.letterSpacing.button,
-  },
   hintCard: {
     backgroundColor: colors.secondarySoft,
-    borderColor: colors.secondary,
     borderRadius: radius.md,
-    borderWidth: 2,
     gap: spacing.xs,
+    // Fixed regardless of which level is showing, so swapping from a short "Hint 1" to a longer
+    // "Hint 3" (or back) doesn't visibly resize the box — `minHeight`, not `height`, so an
+    // unusually long hint can still grow past it rather than being clipped.
+    minHeight: 150,
     padding: spacing.smPlus,
   },
   hintClosed: { color: colors.textSecondary },
+  // Both text styles in the hint card are 25% larger than their usual size: `hintLevel` off
+  // `typography.fontSize.sm` (14 * 1.25 = 17.5, rounded), `hintContent` off the same body size
+  // AppText's own default variant uses (16 * 1.25 = 20) — it was previously unstyled and inherited
+  // that default outright, so scaling it needs an explicit style where none existed before.
+  hintContent: { fontSize: 20, lineHeight: 30 },
   hintHeader: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
   hintLevel: {
     color: colors.secondaryForeground,
     fontFamily: typography.fonts.bold,
-    fontSize: typography.fontSize.sm,
+    fontSize: 18,
     letterSpacing: typography.letterSpacing.label,
   },
-  headerRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   iconCircle: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -767,26 +1099,78 @@ const styles = StyleSheet.create({
     width: 88,
   },
   muted: { color: colors.textSecondary },
-  outcomeCard: {
-    backgroundColor: colors.surface2,
-    borderColor: colors.border,
+  // Fills `taskScrollWrapper` exactly (see the JSX comment above its usage) — used both for the
+  // BlurView layer and for the pointer-events wrapper around it, since both need the identical box.
+  outcomeOverlay: { bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
+  // 50% of the scroll wrapper's own width/height, per the request — the wrapper IS the card's
+  // working area (everything between the header row and the footer), so this reads as "half the
+  // big card" without literally including the thin header/footer chrome in that measurement.
+  // No background fill and no border: the popup sits directly on the blurred card behind it, with
+  // only a soft glow (set per outcome below) marking its edge, shading outward rather than stopping
+  // at a hard line or a filled box — the "fading away" look. `shadowOffset: {0, 0}` spreads the glow
+  // evenly on every side instead of favouring one edge the way a drop shadow normally would.
+  // `shadowOpacity` is pushed to 1 (full strength of the colour itself) rather than the usual
+  // fractional value: that colour is already a pale near-white tint, so a "normal" shadow opacity
+  // like 0.4-0.5 blends it into the card's own similarly pale background and the glow all but
+  // disappears — it needs to be at full strength to read as a visible fade at all. `elevation`
+  // (Android) cannot take a colour and falls back to a plain dark shadow there — an accepted
+  // platform gap, not a separate bug to fix.
+  outcomePopup: {
+    alignItems: 'center',
     borderRadius: radius.lg,
-    borderWidth: 2,
+    elevation: 10,
     gap: spacing.xs,
+    height: '50%',
+    justifyContent: 'center',
     padding: spacing.md,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 50,
+    width: '50%',
   },
-  outcomeCorrect: { backgroundColor: '#e9f8f1', borderColor: colors.success },
-  outcomeIncorrect: { backgroundColor: colors.secondarySoft, borderColor: colors.secondary },
+  outcomePopupCenter: { alignItems: 'center', flex: 1, justifyContent: 'center' },
+  // Glow colour matches each variant's own background exactly (not the more saturated
+  // success/danger tone), so the fade reads as the popup's own colour spreading outward rather
+  // than a contrasting halo around it.
+  outcomeCorrect: { shadowColor: '#e9f8f1' },
+  outcomeIncorrect: { shadowColor: colors.secondarySoft },
+  // Title/detail text tinted to each outcome's own saturated accent — #7bd3aa (colors.success) for
+  // correct, matching the icon circle's own fill — now that the popup has no background of its own
+  // to carry that colour instead.
+  outcomeTextCorrect: { color: colors.success },
+  outcomeTextIncorrect: { color: colors.accentRed },
+  outcomeIcon: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    height: 56,
+    justifyContent: 'center',
+    width: 56,
+  },
+  outcomeIconCorrect: { backgroundColor: colors.success },
+  outcomeIconIncorrect: { backgroundColor: colors.accentRed },
   outcomeTitle: {
     fontFamily: typography.fonts.display,
     fontSize: typography.fontSize.subtitle,
     lineHeight: typography.lineHeight.subtitle,
   },
   pressed: { opacity: 0.85 },
+  progressFill: {
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    height: '100%',
+  },
+  progressRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
   progressText: {
     color: colors.textSecondary,
     fontFamily: typography.fonts.bold,
     fontSize: typography.fontSize.sm,
+  },
+  progressTrack: {
+    backgroundColor: colors.surface3,
+    borderRadius: radius.pill,
+    flex: 1,
+    height: 14,
+    overflow: 'hidden',
   },
   promptCard: {
     backgroundColor: colors.surface1,
@@ -797,11 +1181,17 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     padding: spacing.md,
   },
+  // Combined with `scroll`'s own `gap: spacing.md`, this doubles the visible gap between the
+  // progress bar and this card specifically (see the JSX comment above its usage).
+  promptCardAfterProgress: { marginTop: spacing.md },
   safeArea: { backgroundColor: colors.background, flex: 1 },
-  scroll: { gap: spacing.md, padding: spacing.md, paddingBottom: spacing.xl },
+  // `flexGrow: 1` is what lets `answerCenter`'s own `flex: 1` mean something: without it the
+  // content container sizes to its content's natural height and there is no leftover space for
+  // `answerCenter` to claim, even when the card has plenty of room to spare.
+  scroll: { flexGrow: 1, gap: spacing.md, padding: spacing.md },
   skillPill: {
     alignItems: 'center',
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
     backgroundColor: colors.primarySoft,
     borderRadius: radius.pill,
     flexDirection: 'row',
@@ -822,5 +1212,86 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
   },
   supportCode: { color: colors.textMuted, fontSize: typography.fontSize.xs },
+  // The question card: same shape as c-session's own task panel (game-family-accents.ts's
+  // sibling), so the two components' games open into the same kind of object — a warm card on a
+  // neutral ground, edged in the colour of the skill (here) or game family (there) it belongs to.
+  taskCanvas: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    maxWidth: 500,
+    width: '100%',
+  },
+  taskExitButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surface1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  taskHeaderRow: { left: spacing.smPlus, position: 'absolute', top: spacing.smPlus, zIndex: 2 },
+  // Same corner treatment as taskHeaderRow, mirrored to the right: same size circle (taskExitButton),
+  // same offset from the card's edge, same zIndex above the centred skill pill row.
+  taskHintButton: { backgroundColor: colors.secondarySoft, borderColor: colors.secondary },
+  taskHintRow: { position: 'absolute', right: spacing.smPlus, top: spacing.smPlus, zIndex: 2 },
+  // Spans the card's full width (not just the space left of the exit button) so the pill centres
+  // on the CARD's own x-axis. `pointerEvents="none"` on the row lets taps in its empty margins
+  // pass through to whatever sits beneath rather than intercepting them — only the exit button,
+  // which sits in its own row above this one (higher zIndex), is actually tappable up here.
+  taskSkillPillRow: {
+    alignItems: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: spacing.smPlus,
+    zIndex: 1,
+  },
+  taskPanel: {
+    backgroundColor: '#fffdf6',
+    borderRadius: radius.lg,
+    borderWidth: TASK_PANEL_BORDER_WIDTH,
+    elevation: 5,
+    height: '92%',
+    padding: spacing.md,
+    paddingTop: spacing.xxl,
+    position: 'relative',
+    shadowColor: colors.foreground,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 7,
+    width: '92%',
+  },
+  taskGradientBackground: {
+    bottom: 0,
+    left: 0,
+    overflow: 'hidden',
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
+  taskGradientFill: { flex: 1 },
+  taskSafeArea: { backgroundColor: colors.background, flex: 1 },
+  taskScroll: { flex: 1 },
+  // `position: 'relative'` makes this the positioning root for `outcomeOverlay`'s absolute fill —
+  // without it, the overlay would resolve against the next positioned ancestor up (`taskPanel`),
+  // covering the header and footer too, which is exactly what this wrapper exists to prevent.
+  taskScrollWrapper: { flex: 1, position: 'relative' },
+  // Sits below the ScrollView as its own fixed box (see the JSX comment above it). `paddingBottom`
+  // is set inline per render, from `footerPaddingBottom` — what is left over after subtracting the
+  // panel's own border and bottom padding (both already sit between this box's bottom edge and the
+  // card's outer edge) from `footerBottomGap`, the live-measured pill-bottom-to-prompt-card-top
+  // gap (falling back to TASK_FOOTER_BOTTOM_GAP for the one frame before layout has measured
+  // anything). `paddingHorizontal` matches `scroll`'s own horizontal padding so the buttons line up
+  // with the question and answer surfaces above them, which sit inside BOTH the panel's padding
+  // and the scroll's own.
+  taskFooter: {
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+  },
   visual: { marginTop: spacing.md },
 });

@@ -42,6 +42,7 @@ type AuthActionResult =
 type AuthContextValue = {
   me: AuthorizedLearner | null;
   notice: string | null;
+  profileGender: Gender | null;
   profileName: string | null;
   status: AuthStatus;
   continueToComponentBPreview: () => void;
@@ -57,6 +58,14 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 function readDisplayName(session: Session) {
   const value = session.user.user_metadata.display_name;
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+// The backend's own LearnerProfileResponse carries no gender field — it is captured once at
+// sign-up (see signUpWithEmail's own `options.data.gender`) and stored only in Supabase's
+// user_metadata, the same place display_name lives, read back the same way.
+function readGender(session: Session): Gender | null {
+  const value = session.user.user_metadata.gender;
+  return value === 'female' || value === 'male' ? value : null;
 }
 
 function safeNotice(error: unknown) {
@@ -112,12 +121,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [status, setStatus] = useState<AuthStatus>('checking');
   const [me, setMe] = useState<AuthorizedLearner | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [profileGender, setProfileGender] = useState<Gender | null>(null);
   const [profileName, setProfileName] = useState<string | null>(null);
   const operationRef = useRef(0);
 
   const clearLocalSession = useCallback(async (resolvedConfig: PublicConfig, message?: string) => {
     await getSupabaseClient(resolvedConfig).auth.signOut({ scope: 'local' });
     setMe(null);
+    setProfileGender(null);
     setProfileName(null);
     setStatus('signed-out');
     setNotice(message ?? null);
@@ -130,6 +141,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       setStatus('checking');
       setNotice(null);
       setProfileName(readDisplayName(session));
+      setProfileGender(readGender(session));
 
       try {
         const authorizedUser = await getAuthorizedLearner(
@@ -208,6 +220,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       if (event === 'SIGNED_OUT' || !session) {
         operationRef.current += 1;
         setMe(null);
+        setProfileGender(null);
         setProfileName(null);
         setStatus('signed-out');
       }
@@ -295,6 +308,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         }
 
         setProfileName(input.displayName.trim());
+        setProfileGender(input.gender);
 
         if (!data.session) {
           setStatus('signed-out');
@@ -323,6 +337,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
     setMe(null);
     setNotice(null);
+    setProfileGender(null);
     setProfileName(null);
     setStatus('signed-out');
   }, [config]);
@@ -351,6 +366,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       getAccessToken,
       me,
       notice,
+      profileGender,
       profileName,
       retryAuthorization,
       signInWithEmail,
@@ -363,6 +379,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       getAccessToken,
       me,
       notice,
+      profileGender,
       profileName,
       retryAuthorization,
       signInWithEmail,

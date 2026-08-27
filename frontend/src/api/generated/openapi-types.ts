@@ -21,6 +21,61 @@ export interface AuthenticatedPrincipal {
   "user_id": string;
 }
 
+export interface CActiveSessionResponse {
+  "request_id": string;
+  "session": CSessionFields | null;
+}
+
+export interface CNextTaskResponse {
+  "blanks": number | null;
+  "c_task_instance_id": string;
+  "difficulty_level": number;
+  "game_family_id": string;
+  "game_task_template_id": string;
+  "interactive_assets": Record<string, unknown>;
+  "prompt_payload": Record<string, unknown>;
+  "prompt_text": string;
+  "representation_mode": string;
+  "request_id": string;
+  "scaffold_state": string;
+  "skill_id": string;
+  "task_index": number;
+  "technical_status": string;
+  "valid_action_space": Record<string, string>;
+}
+
+export interface CSessionCommandResponse {
+  "c_session_id": string;
+  "grade": number;
+  "request_id": string;
+  "row_version": number;
+  "session_mode": string;
+  "session_phase": string;
+  "started_at_utc": string;
+  "state": string;
+}
+
+export interface CSessionFields {
+  "c_session_id": string;
+  "grade": number;
+  "row_version": number;
+  "session_mode": string;
+  "session_phase": string;
+  "started_at_utc": string;
+  "state": string;
+}
+
+export interface CSubmitActionRequest {
+  "action_payload": Record<string, unknown>;
+}
+
+export interface CSubmitActionResult {
+  "c_task_instance_id": string;
+  "request_id": string;
+  "response_matched": boolean;
+  "scaffold_level": string;
+}
+
 export interface ClassroomCreateRequest {
   "grade": "GRADE_2" | "GRADE_3";
   "name"?: string | null;
@@ -59,6 +114,24 @@ export interface ClassroomResponse {
   "request_id": string;
   "row_version": number;
   "teacher_profile_id": string;
+}
+
+export interface CompleteCSessionRequest {
+  "attendance_status": "attended" | "partial" | "missed";
+  "technical_blocked_bootstrap"?: boolean;
+}
+
+/**
+ * R-5 (Phase 4b continuation, supervisor ruling): carries grade and session_mode ONLY. B's
+ * identity fields (mastery_source_student_id etc.) were removed from here -- accepting them from
+ * an HTTP client let an untrusted caller assert B provenance it never produced (strictly worse
+ * than the C-manufactures-its-own-provenance failure R1 was written to prevent). See
+ * app/application/live_engine_c/mastery_fixture.py's module docstring for the fixture that now
+ * supplies all of it, for every combined-mode session, server-side only.
+ */
+export interface CreateCSessionRequest {
+  "grade": number;
+  "session_mode": "combined" | "c_only";
 }
 
 export interface HTTPValidationError {
@@ -348,6 +421,48 @@ export const CONTRACT_OPERATIONS: readonly ContractOperation[] = [
     "operationId": "start_session_api_v1_b_sessions_post",
     "request": null,
     "response": "SessionCommandResponse"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/c/sessions/{c_session_id}/abandon",
+    "operationId": "abandon_session_api_v1_c_sessions__c_session_id__abandon_post",
+    "request": null,
+    "response": "CSessionCommandResponse"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/c/sessions/{c_session_id}/complete",
+    "operationId": "complete_session_api_v1_c_sessions__c_session_id__complete_post",
+    "request": "CompleteCSessionRequest",
+    "response": "CSessionCommandResponse"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/c/sessions/{c_session_id}/tasks/{c_task_instance_id}/actions",
+    "operationId": "submit_action_api_v1_c_sessions__c_session_id__tasks__c_task_instance_id__actions_post",
+    "request": "CSubmitActionRequest",
+    "response": "CSubmitActionResult"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/c/sessions/{c_session_id}/tasks/next",
+    "operationId": "next_task_api_v1_c_sessions__c_session_id__tasks_next_post",
+    "request": null,
+    "response": "CNextTaskResponse"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/c/sessions/active",
+    "operationId": "get_active_session_api_v1_c_sessions_active_get",
+    "request": null,
+    "response": "CActiveSessionResponse"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/c/sessions",
+    "operationId": "create_session_api_v1_c_sessions_post",
+    "request": "CreateCSessionRequest",
+    "response": "CSessionCommandResponse"
   },
   {
     "method": "POST",

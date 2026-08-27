@@ -43,13 +43,21 @@ function detailFor(phase: StatusPhase, membership: LearnerMembershipListItem | n
 }
 
 /**
- * Fetches membership status on mount and pull-to-refresh only — no continuous polling
- * while this screen is foregrounded, per frontend.md 15.10's don't-poll guidance.
+ * Fetches membership status on mount, on pull-to-refresh, and on a short poll while a
+ * membership is still PENDING. frontend.md §15.10's "must not continuously poll operational
+ * endpoints during a question" governs `/health/*` during gameplay — a different endpoint in a
+ * different context — and does not apply here; a screen whose entire purpose is "wait for your
+ * teacher to approve you" has no other way to notice that approval happened. Polling stops the
+ * moment the membership leaves PENDING (approved, rejected, or not found) or the screen unmounts.
  */
+const PENDING_POLL_INTERVAL_MS = 4000;
+// How long "You are all set!" stays on screen before the redirect. Long enough to read as
+// deliberate feedback, short enough not to feel like a stall.
+const APPROVED_REDIRECT_DELAY_MS = 500;
 export function ClassroomStatusScreen() {
   const palette = colors;
   const { membershipId } = useLocalSearchParams<{ membershipId?: string }>();
-  const { getAccessToken } = useAuth();
+  const { getAccessToken, retryAuthorization } = useAuth();
   const configResult = useMemo(() => readPublicConfig(), []);
   const [phase, setPhase] = useState<StatusPhase>('loading');
   const [membership, setMembership] = useState<LearnerMembershipListItem | null>(null);
@@ -71,10 +79,6 @@ export function ClassroomStatusScreen() {
       const found = pickMembership(response.memberships, membershipId);
       setMembership(found);
       setPhase('ready');
-
-      if (found?.state === 'APPROVED') {
-        router.replace('/(learner)/home');
-      }
     } catch {
       setPhase('error');
     }
@@ -83,6 +87,33 @@ export function ClassroomStatusScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const isPending = phase === 'ready' && membership?.state === 'PENDING';
+
+  useEffect(() => {
+    if (!isPending) return;
+    const timer = setInterval(() => void load(), PENDING_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [isPending, load]);
+
+  useEffect(() => {
+    if (phase !== 'ready' || membership?.state !== 'APPROVED') return;
+    // This screen's own `membership` is a LOCAL fetch (listLearnerClassrooms) — it does not
+    // touch the global auth-context `status` the root layout's Stack.Protected guards gate
+    // (learner)/(onboarding) on. Navigating without refreshing that global status first means
+    // `status` is still 'onboarding', the (learner) group is never mounted, and
+    // router.replace('/(learner)/home') silently has nowhere to go — the screen just stays put.
+    // Same fix already used by first-time-welcome-screen.tsx after profile creation: call
+    // retryAuthorization() so `status` flips to 'authorized' before navigating there.
+    let cancelled = false;
+    const delay = new Promise<void>((resolve) => setTimeout(resolve, APPROVED_REDIRECT_DELAY_MS));
+    void Promise.all([retryAuthorization(), delay]).then(() => {
+      if (!cancelled) router.replace('/(learner)/home');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [membership, phase, retryAuthorization]);
 
   async function handleRefresh() {
     setRefreshing(true);

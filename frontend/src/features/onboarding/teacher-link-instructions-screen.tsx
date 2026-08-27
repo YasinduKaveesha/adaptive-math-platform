@@ -30,12 +30,12 @@ function formatInviteTokenInput(raw: string): string {
   return `${alphanumeric.slice(0, 4)}-${alphanumeric.slice(4)}`;
 }
 
-function previewCopy(resolution: InviteResolveResponse) {
-  const gradeLabel = gradeLabels[resolution.grade];
+function previewParts(resolution: InviteResolveResponse): { label: string; suffix: string } {
   if (resolution.classroom_name) {
-    return `${resolution.classroom_name}'s Grade ${gradeLabel} classroom — is this right?`;
+    return { label: resolution.classroom_name, suffix: ' — is that the correct classroom?' };
   }
-  return `This classroom (Grade ${gradeLabel}) — is this right?`;
+  const gradeLabel = gradeLabels[resolution.grade];
+  return { label: `This Grade ${gradeLabel} classroom`, suffix: ' — is that the correct classroom?' };
 }
 
 /** Learner-entered join code, previewed and confirmed against the real classroom-invite contract. */
@@ -126,6 +126,8 @@ export function TeacherLinkInstructionsScreen() {
     }
   }
 
+  const preview = resolution ? previewParts(resolution) : null;
+
   return (
     <ScreenShell centered>
       <View style={styles.content}>
@@ -133,14 +135,11 @@ export function TeacherLinkInstructionsScreen() {
           <Ionicons color={palette.textPrimary} name="key-outline" size={42} />
         </View>
         <AppText align="center" variant="title">Connect your teacher</AppText>
-        <AppText align="center" style={{ color: palette.textSecondary }}>
-          This one-time step makes sure you attend lessons with the correct teacher.
-        </AppText>
 
         {phase === 'entering' || phase === 'resolving' ? (
           <>
             <AppText align="center" style={{ color: palette.textSecondary }}>
-              Ask your teacher for the classroom code and type it in below.
+              Ask your teacher for the classroom code.
             </AppText>
             <TextInput
               accessibilityLabel="Classroom join code"
@@ -193,11 +192,14 @@ export function TeacherLinkInstructionsScreen() {
           </>
         ) : null}
 
-        {(phase === 'preview' || phase === 'confirming') && resolution ? (
+        {(phase === 'preview' || phase === 'confirming') && resolution && preview ? (
           <>
             <View style={[styles.previewCard, { backgroundColor: palette.primarySoft }]}>
               <Ionicons color={palette.textPrimary} name="school-outline" size={24} />
-              <AppText style={styles.previewText}>{previewCopy(resolution)}</AppText>
+              <AppText style={styles.previewText}>
+                <AppText style={styles.previewName}>{preview.label}</AppText>
+                {preview.suffix}
+              </AppText>
             </View>
 
             {errorMessage ? (
@@ -289,6 +291,7 @@ const styles = StyleSheet.create({
     gap: spacing.smPlus,
     padding: spacing.md,
   },
-  previewText: { flex: 1, fontSize: 16, fontWeight: '700' },
+  previewName: { fontWeight: '800' },
+  previewText: { flex: 1, fontSize: 16, fontWeight: '500' },
   textButton: { justifyContent: 'center', minHeight: 44 },
 });

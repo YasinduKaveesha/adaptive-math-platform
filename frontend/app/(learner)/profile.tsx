@@ -1,5 +1,5 @@
-import { LearnerEmptyTabScreen } from '@/src/features/navigation/learner-empty-tab-screen';
+import { LearnerProfileScreen } from '@/src/features/profile/learner-profile-screen';
 
 export default function LearnerProfileRoute() {
-  return <LearnerEmptyTabScreen activeTab="profile" />;
+  return <LearnerProfileScreen />;
 }

@@ -19,6 +19,11 @@ import type {
 import type {
   ActiveSessionResponse,
   AttemptResponse,
+  CActiveSessionResponse,
+  CNextTaskResponse,
+  CSessionCommandResponse,
+  CSessionFields,
+  CSubmitActionResult,
   HintRequestResponse,
   OpportunityAdvanceResponse,
   OpportunityPresentationFields,
@@ -355,6 +360,116 @@ export function isSessionStandingResponse(value: unknown): value is SessionStand
     opportunityAdvanceStates.has(value.session_state) &&
     Number.isInteger(value.opportunities_completed) &&
     Number.isInteger(value.opportunities_total_bound) &&
+    isNonEmptyString(value.request_id)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Component C
+//
+// Five guards, not eight/nine. The three C request bodies — CreateCSessionRequest,
+// CompleteCSessionRequest, CSubmitActionRequest — have no runtime guard here. Each is
+// constructed entirely from values this client already controls (a grade/session_mode pair
+// the app itself selects; an attendance_status literal the app itself selects; an
+// action_payload the app itself builds from `valid_action_space`, once 10.0b's encoder
+// exists). A guard validates untrusted input crossing a boundary; there is no boundary
+// crossing here; a guard over a body this client constructed and about to serialize itself
+// would only ever tell us our own object-literal was correct, which is what the TypeScript
+// compiler already guarantees at the call site. Contrast `isProfileCreateRequest` and
+// `isInviteTokenRequest` above, which do have guards: both validate a *stored* pending-command
+// payload replayed back out of persistence (offline-queue commands read from disk are exactly
+// the kind of input the client does not control at the point it's read), not a body built
+// fresh from in-memory state and never round-tripped. The five DTOs guarded below are all
+// response shapes arriving from the network, which the client never controls.
+//
+// Restrict a field to a fixed vocabulary only where the FROZEN CONTRACT itself defines that
+// vocabulary. `session_mode` is a two-member enum on CreateCSessionRequest in openapi.v1.json,
+// so `cSessionModes` reads the contract, not a hidden constant. `state` is typed as a plain
+// string in the frozen contract, with no enum: `c_sessions.state`'s real seven-value vocabulary
+// (`persistence_models.py:34` — starting, active, completing, completed, abandoned, expired,
+// technical_failed) is backend-side and no artefact exposes it here. B's three-value
+// `sessionCommandStates` above is B's own contract, not C's; copying it onto C would silently
+// narrow C's vocabulary by more than half and reject a genuine `expired` or `technical_failed`
+// response. `state` is therefore checked as any non-empty string, never against an enum.
+const cSessionModes = new Set(['combined', 'c_only']);
+
+export function isCSessionFields(value: unknown): value is CSessionFields {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.c_session_id) &&
+    isNonEmptyString(value.state) &&
+    typeof value.session_mode === 'string' &&
+    cSessionModes.has(value.session_mode) &&
+    isNonEmptyString(value.session_phase) &&
+    Number.isInteger(value.grade) &&
+    isNonEmptyString(value.started_at_utc) &&
+    Number.isInteger(value.row_version)
+  );
+}
+
+export function isCActiveSessionResponse(value: unknown): value is CActiveSessionResponse {
+  if (!isRecord(value)) return false;
+  if (!isNonEmptyString(value.request_id)) return false;
+  if (value.session === null) return true;
+  return isCSessionFields(value.session);
+}
+
+export function isCSessionCommandResponse(value: unknown): value is CSessionCommandResponse {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.c_session_id) &&
+    isNonEmptyString(value.state) &&
+    typeof value.session_mode === 'string' &&
+    cSessionModes.has(value.session_mode) &&
+    isNonEmptyString(value.session_phase) &&
+    Number.isInteger(value.grade) &&
+    isNonEmptyString(value.started_at_utc) &&
+    Number.isInteger(value.row_version) &&
+    isNonEmptyString(value.request_id)
+  );
+}
+
+// Deliberately does not validate `valid_action_space`'s declared type strings against the
+// recognised vocabulary (int/bool/number/list[X]/pipe-string) — that belongs to 10.0b's
+// archetype/encoder layer, which is the client code that actually acts on a declared type.
+// This guard proves only the wire shape: every key maps to a string. A type string outside
+// the recognised vocabulary is 10.0b's fail-closed concern, not this one's.
+export function isCNextTaskResponse(value: unknown): value is CNextTaskResponse {
+  if (!isRecord(value)) return false;
+  if (!isRecord(value.valid_action_space)) return false;
+  if (!Object.values(value.valid_action_space).every((entry) => typeof entry === 'string')) {
+    return false;
+  }
+  // `blanks` is required but nullable: present as `null`, or an integer. Absent entirely is
+  // invalid, which is why this is not folded into an `=== null || Number.isInteger(...)` check
+  // against a possibly-missing property -- `'blanks' in value` must hold first.
+  if (!Object.prototype.hasOwnProperty.call(value, 'blanks')) return false;
+  if (value.blanks !== null && !Number.isInteger(value.blanks)) return false;
+  return (
+    isNonEmptyString(value.c_task_instance_id) &&
+    isNonEmptyString(value.game_family_id) &&
+    isNonEmptyString(value.game_task_template_id) &&
+    Number.isInteger(value.task_index) &&
+    isNonEmptyString(value.skill_id) &&
+    Number.isInteger(value.difficulty_level) &&
+    isNonEmptyString(value.representation_mode) &&
+    isRecord(value.prompt_payload) &&
+    isRecord(value.interactive_assets) &&
+    isNonEmptyString(value.scaffold_state) &&
+    isNonEmptyString(value.technical_status) &&
+    isNonEmptyString(value.prompt_text) &&
+    isNonEmptyString(value.request_id)
+  );
+}
+
+// `response_matched` is the server's verdict, read and relayed, never computed — this guard
+// checks it is present and boolean-typed, and does nothing else with its value.
+export function isCSubmitActionResult(value: unknown): value is CSubmitActionResult {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.c_task_instance_id) &&
+    typeof value.response_matched === 'boolean' &&
+    isNonEmptyString(value.scaffold_level) &&
     isNonEmptyString(value.request_id)
   );
 }

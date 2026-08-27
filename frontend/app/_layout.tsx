@@ -10,6 +10,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-reanimated';
 
@@ -70,10 +71,17 @@ export default function RootLayout() {
   if (!fontsLoaded && !fontError) return null;
 
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <RootNavigator />
-      </AuthProvider>
-    </SafeAreaProvider>
+    // Required by `react-native-gesture-handler` (used by `value-token-row.tsx`'s NP-04 reorder
+    // drag, 10a) at the root of the app, on every platform including web -- without it, gestures
+    // fail to register touches at all. Missing since 10a shipped; added 2026-08-26 once the owner
+    // found NP-04's drag genuinely did not respond in the browser. `style={{ flex: 1 }}` so this
+    // wrapper fills the screen rather than sizing to its own (empty) content.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

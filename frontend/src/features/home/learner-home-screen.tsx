@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import {
-  ActivityIndicator,
   Animated,
   Platform,
   Pressable,
@@ -20,7 +18,6 @@ import { createComponentBApi } from '@/src/api/component-b-api';
 import { useAuth } from '@/src/auth/auth-context';
 import { AppText } from '@/src/components/app-text';
 import { readPublicConfig } from '@/src/config/env';
-import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
 import {
   combineHomeSessionState,
   derivePathNodeStates,
@@ -83,7 +80,6 @@ export function LearnerHomeScreen() {
   const insets = useSafeAreaInsets();
   const compact = height < 760;
   const { getAccessToken, me, profileName } = useAuth();
-  const { preparingPlay } = useAdventureCharge();
   // The personal-name fallback that used to sit at the end of this chain is gone: it was a real
   // person's name, so a child whose profile had not loaded yet was greeted as someone else.
   // 'Math Explorer' is the same neutral placeholder the prep screen uses. (The removed name is not
@@ -474,29 +470,12 @@ export function LearnerHomeScreen() {
           </Animated.View>
         )}
         <LearnerTabBar activeTab="home" playEnabled />
-
-        {preparingPlay ? (
-          <View pointerEvents="none" style={styles.preparingOverlay}>
-            <BlurView intensity={40} style={styles.preparingOverlay} tint="light" />
-            <ActivityIndicator color={colors.primary} size="large" style={styles.preparingSpinner} />
-          </View>
-        ) : null}
       </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  preparingOverlay: {
-    alignItems: 'center',
-    bottom: 0,
-    justifyContent: 'center',
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0,
-  },
-  preparingSpinner: { transform: [{ scale: 2 }] },
   buttonPressed: { borderBottomWidth: 0, transform: [{ translateY: 3 }] },
   dashboardSection: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.sm, paddingTop: 0, width: '100%' },
   dots: { flexDirection: 'row', gap: 2, marginTop: 2 },

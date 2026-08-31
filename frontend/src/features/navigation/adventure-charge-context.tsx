@@ -2,8 +2,12 @@ import { router } from 'expo-router';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '@/src/auth/auth-context';
-import { putCSessionPrefetch } from '@/src/features/c-session/c-session-prefetch-cache';
+import {
+  putCSessionPrefetch,
+  takeCSessionPrefetch,
+} from '@/src/features/c-session/c-session-prefetch-cache';
 import { prefetchCSessionBootstrap } from '@/src/features/c-session/c-session-prefetch';
+import { PlayPrepCard } from '@/src/features/home/play-prep-card';
 import {
   ADVENTURE_CHARGE_MAX_LEVEL,
   awardAdventureCharge,
@@ -25,11 +29,20 @@ type AdventureChargeContextValue = {
   level: number;
   maxLevel: number;
   pillVisible: boolean;
-  /** True from the moment Play is pressed (at full charge) until navigation actually happens or
-   * the attempt fails. Home renders its full-screen blur+spinner overlay while this is true. */
+  /** True from the moment Play is pressed (at full charge) until the child either presses
+   * "Start Game" on the prep card or dismisses it. The provider renders the blurred prep-card
+   * overlay while this is true. */
   preparingPlay: boolean;
-  /** Play's own press handler: navigates only at maxLevel, otherwise shows the pill instead. */
+  /** True once the background Component C prefetch has settled (success OR failure -- a failed
+   * prefetch still navigates, into c-session's own bootstrap). The prep card's "Start Game"
+   * button waits for this. */
+  playPrepReady: boolean;
+  /** Play's own press handler: opens the prep card only at maxLevel, otherwise shows the pill. */
   requestPlay: () => void;
+  /** The prep card's "Start Game" button: navigates into the prefetched Component C session. */
+  startPreparedGame: () => void;
+  /** The prep card's close control: drops the prep state and discards the pending prefetch. */
+  dismissPlayPrep: () => void;
   /** Called once from the session screen when a Component B session genuinely completes. */
   awardForSession: (sessionId: string) => void;
 };
@@ -46,6 +59,8 @@ export function AdventureChargeProvider({ children }: { children: React.ReactNod
   const [level, setLevel] = useState(0);
   const [pillVisible, setPillVisible] = useState(false);
   const [preparingPlay, setPreparingPlay] = useState(false);
+  const [playPrepReady, setPlayPrepReady] = useState(false);
+  const preparedGradeRef = useRef<number | null>(null);
   const pillTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -88,20 +103,19 @@ export function AdventureChargeProvider({ children }: { children: React.ReactNod
       // membership), do nothing rather than sending the child into c-session.tsx's dead-end "not
       // ready" screen -- Home, which is where this press already happened, is still exactly right.
       if (grade === undefined) return;
-      // Prefetch while Home's own blur+spinner overlay covers the wait -- navigation happens only
-      // AFTER the prefetch settles, so the overlay covers the entire real wait, not just an
-      // instant. c-session.tsx never shows its own separate loading screen for this first task;
-      // see c-session-prefetch-cache.ts for why this is safe (unlike the Component B attempt
-      // reverted earlier today). Best-effort either way: a failed prefetch still navigates, just
-      // into c-session.tsx's own normal bootstrap-and-loading path, exactly as if none of this
-      // existed.
+      // Open the prep card and kick off the Component C prefetch behind its blurred backdrop. The
+      // card owns the wait now: it runs its skill-calibration animation while the prefetch is in
+      // flight and only navigates when the child presses "Start Game" (startPreparedGame below).
+      // c-session.tsx never shows its own separate loading screen for this first task; see
+      // c-session-prefetch-cache.ts for why calling next_task from here is safe. Best-effort
+      // either way: a failed prefetch still navigates, into c-session.tsx's own normal
+      // bootstrap-and-loading path, exactly as if none of this existed.
+      preparedGradeRef.current = grade;
+      setPlayPrepReady(false);
       setPreparingPlay(true);
       const prefetch = prefetchCSessionBootstrap(grade, getAccessToken);
       if (subject) putCSessionPrefetch(subject, prefetch);
-      void prefetch.catch(() => null).finally(() => {
-        router.replace({ params: { grade: String(grade), sessionMode: 'c_only' }, pathname: '/(learner)/c-session' });
-        setPreparingPlay(false);
-      });
+      void prefetch.catch(() => null).finally(() => setPlayPrepReady(true));
       return;
     }
     setPillVisible(true);
@@ -109,19 +123,62 @@ export function AdventureChargeProvider({ children }: { children: React.ReactNod
     pillTimerRef.current = setTimeout(() => setPillVisible(false), PILL_VISIBLE_MS);
   }, [getAccessToken, grade, level, subject]);
 
+  const startPreparedGame = useCallback(() => {
+    const preparedGrade = preparedGradeRef.current;
+    if (preparedGrade === null) return;
+    setPreparingPlay(false);
+    setPlayPrepReady(false);
+    router.replace({
+      params: { grade: String(preparedGrade), sessionMode: 'c_only' },
+      pathname: '/(learner)/c-session',
+    });
+  }, []);
+
+  const dismissPlayPrep = useCallback(() => {
+    setPreparingPlay(false);
+    setPlayPrepReady(false);
+    preparedGradeRef.current = null;
+    // Discard the cached prefetch so a later entry re-bootstraps from scratch. Any session the
+    // prefetch already created on the backend is simply resumed by c-session's own bootstrap.
+    if (subject) takeCSessionPrefetch(subject);
+  }, [subject]);
+
   const value = useMemo<AdventureChargeContextValue>(
     () => ({
       level,
       maxLevel: ADVENTURE_CHARGE_MAX_LEVEL,
       pillVisible,
       preparingPlay,
+      playPrepReady,
       requestPlay,
+      startPreparedGame,
+      dismissPlayPrep,
       awardForSession,
     }),
-    [awardForSession, level, pillVisible, preparingPlay, requestPlay],
+    [
+      awardForSession,
+      dismissPlayPrep,
+      level,
+      pillVisible,
+      playPrepReady,
+      preparingPlay,
+      requestPlay,
+      startPreparedGame,
+    ],
   );
 
-  return <AdventureChargeContext.Provider value={value}>{children}</AdventureChargeContext.Provider>;
+  return (
+    <AdventureChargeContext.Provider value={value}>
+      {children}
+      {preparingPlay ? (
+        <PlayPrepCard
+          onDismiss={dismissPlayPrep}
+          onStart={startPreparedGame}
+          ready={playPrepReady}
+        />
+      ) : null}
+    </AdventureChargeContext.Provider>
+  );
 }
 
 export function useAdventureCharge(): AdventureChargeContextValue {

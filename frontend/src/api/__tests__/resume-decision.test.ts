@@ -41,6 +41,7 @@ const secureStoreStub = {
 
 const stubs: Record<string, unknown> = {
   '@expo/vector-icons': { Ionicons: () => null },
+  'expo-blur': { BlurView: () => null },
   'expo-crypto': { randomUUID: () => 'stub-uuid' },
   'expo-image': { Image: () => null },
   'expo-router': { router: { replace: () => {} } },

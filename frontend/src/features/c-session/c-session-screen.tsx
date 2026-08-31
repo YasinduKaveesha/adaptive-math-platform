@@ -49,6 +49,7 @@ import {
 import { AnswerFeedbackPanel } from '@/src/features/c-session/answer-feedback-panel';
 import { FailClosedFrame } from '@/src/features/c-session/fail-closed-frame';
 import { accentForGameFamily } from '@/src/features/c-session/game-family-accents';
+import { nameForGameFamily } from '@/src/features/c-session/game-family-names';
 import { NeutralMessageScreen } from '@/src/features/c-session/neutral-message-screen';
 import { TechnicalBlockScreen } from '@/src/features/c-session/technical-block-screen';
 import {
@@ -59,7 +60,25 @@ import {
   recordTaskStarted,
   recordTechnicalIssue,
 } from '@/src/features/c-session/telemetry';
-import { colors, radius, spacing } from '@/src/theme/tokens';
+import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+
+/**
+ * The task's `scaffold_state` as a child-facing level chip. The wire vocabulary is `C0`..`C4`
+ * (five levels; `CNextTaskResponse.scaffold_state`, `persistence_models.py`'s CHECK constraint) --
+ * shown here one-indexed as "Lv 1".."Lv 5". Tolerant, exactly like c-session-logic.ts treats the
+ * sibling `scaffold_level` string: anything that is not `C<0-4>` yields `null` and the chip is
+ * simply not rendered, never a crash or a raw code leaking to the screen.
+ */
+function scaffoldLevelLabel(scaffoldState: string): string | null {
+  const match = /^C([0-4])$/.exec(scaffoldState.trim());
+  if (match === null) return null;
+  return `Lv ${Number(match[1]) + 1}`;
+}
+
+/** A translucent tint of an accent hex, for a pill background that reads as "this game's colour". */
+function softTint(hex: string): string {
+  return `${hex}22`;
+}
 
 export type CSessionScreenProps = {
   // Not decided or invented by this screen -- see c-session-logic.ts's decideSessionBootstrap
@@ -442,6 +461,31 @@ export function CSessionScreen({ grade, sessionMode }: CSessionScreenProps) {
                 <Ionicons color={colors.textSecondary} name="close" size={22} />
               </Pressable>
             </View>
+            {/* Centred on the CARD's own x-axis (left:0/right:0 spans the full width, so the exit
+                control's width never shifts it), same corner offset as the exit row. Carries the
+                child-friendly game-family name, tinted with the family's own accent -- the same
+                "pill takes the card's colour" treatment Component B's skill pill uses, minus the
+                icon. `pointerEvents="none"` so the empty margins on either side don't intercept
+                taps meant for the exit button beneath. */}
+            <View pointerEvents="none" style={styles.taskFamilyPillRow}>
+              <View style={[styles.familyPill, { backgroundColor: softTint(accent) }]}>
+                <AppText style={[styles.familyPillText, { color: accent }]}>
+                  {nameForGameFamily(task.game_family_id)}
+                </AppText>
+              </View>
+            </View>
+            {/* Top-right, where Component B puts its hint control: the current scaffold level as a
+                "Lv N" chip (five levels, C0..C4 -> Lv 1..Lv 5). Not rendered for an unrecognised
+                scaffold code -- see scaffoldLevelLabel. */}
+            {scaffoldLevelLabel(task.scaffold_state) !== null ? (
+              <View style={styles.taskLevelRow}>
+                <View style={[styles.levelChip, { borderColor: accent }]}>
+                  <AppText style={[styles.levelChipText, { color: accent }]}>
+                    {scaffoldLevelLabel(task.scaffold_state)}
+                  </AppText>
+                </View>
+              </View>
+            ) : null}
             {/* Fixed shares of the card's own height, not of whatever's left over: 7% above the
                 question, 5% below SUBMIT. The middle wrapper is `flex: 1, justifyContent:
                 'flex-end'` so the surface's content -- title, tokens, keypad, SUBMIT -- is pinned
@@ -496,6 +540,31 @@ export function CSessionScreen({ grade, sessionMode }: CSessionScreenProps) {
 }
 
 const styles = StyleSheet.create({
+  familyPill: {
+    alignSelf: 'center',
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.smPlus,
+    paddingVertical: spacing.xs,
+  },
+  familyPillText: {
+    fontFamily: typography.fonts.bold,
+    fontSize: typography.fontSize.sm,
+    letterSpacing: typography.letterSpacing.label,
+  },
+  levelChip: {
+    backgroundColor: colors.surface1,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    minWidth: TOUCH_TARGET_MIN_SIZE,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  levelChipText: {
+    fontFamily: typography.fonts.bold,
+    fontSize: typography.fontSize.sm,
+    letterSpacing: typography.letterSpacing.label,
+    textAlign: 'center',
+  },
   muted: { color: colors.textSecondary },
   pressed: { opacity: 0.85 },
   taskExitButton: {
@@ -520,7 +589,21 @@ const styles = StyleSheet.create({
     left: spacing.smPlus,
     position: 'absolute',
     top: spacing.smPlus,
+    zIndex: 2,
+  },
+  taskFamilyPillRow: {
+    alignItems: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: spacing.smPlus,
     zIndex: 1,
+  },
+  taskLevelRow: {
+    position: 'absolute',
+    right: spacing.smPlus,
+    top: spacing.smPlus,
+    zIndex: 2,
   },
   // Fixed percentages of the card's own height (not of leftover space): 7% between the card's top
   // and the question, 5% between SUBMIT and the card's bottom.

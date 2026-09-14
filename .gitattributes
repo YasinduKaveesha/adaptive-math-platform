@@ -27,3 +27,23 @@
 *.otf binary
 *.woff binary
 *.woff2 binary
+
+# The vendored governed catalogue is hash-pinned to bytes that are NOT LF-normalised, so the
+# blanket `* text=auto eol=lf` rule above must not reach it.
+#
+# `c-runtime-bundle-approved-1.0.json` records `catalogue.checksum` =
+# 82004a5fef94528ea1e4187473420453bdfb7e1d3b5ade48ce2bc03486630851, computed over the governed
+# source in ResearchProject/Yass/Component_C_v1.0/, which is CRLF. Normalising this copy to LF
+# changes every line by one byte -- 2133 lines, 2133 bytes, a different sha256 -- and
+# `bundle_resolution.py` then raises `RuntimeBundleChecksumMismatchError`, which
+# `CSessionService.create` converts into a bare HTTP 409 with no indication of the cause. Every
+# Component C session fails, and the error names nothing.
+#
+# That is not hypothetical: it is exactly what happened once the normalisation rule above first
+# reached a working tree, taking 33 backend tests with it. `-text` pins the bytes so this copy
+# stays byte-identical to the artefact its checksum attests to.
+#
+# If this file is ever re-vendored, copy it verbatim and re-verify the sha256 against the bundle
+# BEFORE committing -- do not "fix" a mismatch by editing the recorded checksum, which would
+# assert that governance signed bytes it never saw.
+backend/provenance/R26-IT-138_Component_C_Game_Task_Catalogue_v1.0.md -text

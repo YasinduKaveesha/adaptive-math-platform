@@ -257,8 +257,10 @@ class Classroom(ProvenanceMixin, Base):
     __table_args__ = (
         CheckConstraint("grade IN ('GRADE_2', 'GRADE_3')", name="ck_classrooms_grade"),
         CheckConstraint("name IS NULL OR btrim(name) <> ''", name="ck_classrooms_name_nonblank"),
-        Index("uq_classrooms_teacher_normalized_name", "teacher_profile_id", func.lower(func.btrim(text("name"))), unique=True, postgresql_where=text("name IS NOT NULL")),
+        # A deleted classroom no longer holds its name (migration 20260914_0009).
+        Index("uq_classrooms_teacher_normalized_name", "teacher_profile_id", func.lower(func.btrim(text("name"))), unique=True, postgresql_where=text("name IS NOT NULL AND deleted_at_utc IS NULL")),
         CheckConstraint("row_version >= 0", name="ck_classrooms_row_version"),
+        CheckConstraint("(deleted_at_utc IS NULL) = (deleted_by_user_id IS NULL)", name="ck_classrooms_deletion_pair"),
         *ProvenanceMixin.provenance_constraints("classrooms"),
     )
 
@@ -267,6 +269,15 @@ class Classroom(ProvenanceMixin, Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     grade: Mapped[str] = mapped_column(String(16), nullable=False)
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # Soft delete (20260914_0009): set once by the owning teacher, never cleared. Every
+    # teacher-facing read filters it out; the row stays because memberships, invites and
+    # Component 3's tables all reference it with ON DELETE RESTRICT.
+    deleted_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("app_users.user_id", ondelete="RESTRICT", name="fk_classrooms_deleted_by_user_id_app_users"),
+        nullable=True,
+    )
 
 
 class ClassroomInvite(ProvenanceMixin, Base):
@@ -291,8 +302,9 @@ class ClassroomMembership(ProvenanceMixin, Base):
     __tablename__ = "classroom_memberships"
     __table_args__ = (
         UniqueConstraint("classroom_id", "learner_id", name="uq_classroom_memberships_pair"),
-        CheckConstraint("state IN ('PENDING', 'APPROVED', 'REJECTED')", name="ck_classroom_memberships_state"),
-        CheckConstraint("(state = 'PENDING' AND decided_at_utc IS NULL AND decided_by_user_id IS NULL) OR (state IN ('APPROVED', 'REJECTED') AND decided_at_utc IS NOT NULL AND decided_by_user_id IS NOT NULL)", name="ck_classroom_memberships_decision"),
+        # REMOVED (20260914_0009): the membership ended because its classroom was deleted.
+        CheckConstraint("state IN ('PENDING', 'APPROVED', 'REJECTED', 'REMOVED')", name="ck_classroom_memberships_state"),
+        CheckConstraint("(state = 'PENDING' AND decided_at_utc IS NULL AND decided_by_user_id IS NULL) OR (state IN ('APPROVED', 'REJECTED', 'REMOVED') AND decided_at_utc IS NOT NULL AND decided_by_user_id IS NOT NULL)", name="ck_classroom_memberships_decision"),
         CheckConstraint("row_version >= 0", name="ck_classroom_memberships_row_version"),
         Index(
             "uq_classroom_memberships_one_approved_per_learner",

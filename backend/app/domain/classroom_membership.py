@@ -17,7 +17,8 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-MembershipState = Literal["PENDING", "APPROVED", "REJECTED"]
+# REMOVED (20260914_0009): the membership ended because its classroom was deleted.
+MembershipState = Literal["PENDING", "APPROVED", "REJECTED", "REMOVED"]
 Grade = Literal["GRADE_2", "GRADE_3"]
 
 
@@ -32,7 +33,14 @@ class InviteCreateResponse(StrictModel):
     token_already_issued: bool = Field(
         description="True when this response is a replay of an already-committed invite creation."
     )
-    expires_at_utc: datetime
+    expires_at_utc: datetime | None = Field(
+        default=None,
+        description=(
+            "When the code stops resolving. NULL for a classroom join code, which does not "
+            "expire: a teacher reads it aloud to a room and children write it down, so it "
+            "stays valid until the classroom is deleted."
+        ),
+    )
     created_at_utc: datetime
     request_id: str
 

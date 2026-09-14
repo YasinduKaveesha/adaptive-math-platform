@@ -243,10 +243,29 @@ class ClassroomMembershipService:
             idem, replay = await self._idempotency_start(uow.session, user, "classroom_invite.create", key, fp, request_id)
             if replay is not None:
                 return InviteCreateResponse.model_validate(replay)
+            # One live join code per classroom. Idempotency-Key only collapses retries of the
+            # same call; two calls with different keys would otherwise mint a second code that
+            # also resolves, while the teacher can only ever read one of them back.
+            existing = await ClassroomInviteRepository(uow.session).find_live_by_classroom(classroom_id)
+            if existing is not None:
+                response = InviteCreateResponse(
+                    classroom_invite_id=existing.classroom_invite_id,
+                    # The plaintext was shown once, at creation, and only its hash was kept.
+                    invite_token=None,
+                    token_already_issued=True,
+                    expires_at_utc=existing.expires_at_utc,
+                    created_at_utc=existing.created_at_utc,
+                    request_id=request_id,
+                )
+                self._finish(idem, response.model_dump(mode="json"), 200)
+                await uow.commit()
+                return response
             canonical_code = generate_classroom_join_code()
             token_hash = hash_join_code(canonical_code)
             invite_id = uuid4()
-            expires_at = datetime.now(UTC) + timedelta(hours=24)
+            # A classroom join code does not expire. It dies when the classroom is deleted
+            # (revoked_at_utc), never on a clock -- children write it down.
+            expires_at = None
             invite = ClassroomInvite(
                 classroom_invite_id=invite_id,
                 classroom_id=classroom_id,
@@ -264,7 +283,7 @@ class ClassroomMembershipService:
                 "classroom_invite_id": str(invite_id),
                 "invite_token": None,
                 "token_already_issued": True,
-                "expires_at_utc": invite.expires_at_utc.isoformat(),
+                "expires_at_utc": invite.expires_at_utc.isoformat() if invite.expires_at_utc is not None else None,
                 "created_at_utc": invite.created_at_utc.isoformat(),
                 "request_id": request_id,
             }

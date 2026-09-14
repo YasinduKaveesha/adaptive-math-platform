@@ -396,6 +396,57 @@
         "title": "ClassroomCreateRequest",
         "type": "object"
       },
+      "ClassroomDeleteRequest": {
+        "additionalProperties": false,
+        "description": "The classroom name, typed by the teacher, as the confirmation for deleting it.",
+        "properties": {
+          "confirmation_name": {
+            "title": "Confirmation Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmation_name"
+        ],
+        "title": "ClassroomDeleteRequest",
+        "type": "object"
+      },
+      "ClassroomDeleteResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "classroom_id": {
+            "format": "uuid",
+            "title": "Classroom Id",
+            "type": "string"
+          },
+          "deleted_at_utc": {
+            "format": "date-time",
+            "title": "Deleted At Utc",
+            "type": "string"
+          },
+          "removed_membership_count": {
+            "title": "Removed Membership Count",
+            "type": "integer"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "row_version": {
+            "title": "Row Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "classroom_id",
+          "deleted_at_utc",
+          "removed_membership_count",
+          "row_version",
+          "request_id"
+        ],
+        "title": "ClassroomDeleteResponse",
+        "type": "object"
+      },
       "ClassroomLearnerListItem": {
         "additionalProperties": false,
         "properties": {
@@ -413,7 +464,8 @@
             "enum": [
               "PENDING",
               "APPROVED",
-              "REJECTED"
+              "REJECTED",
+              "REMOVED"
             ],
             "title": "Membership State",
             "type": "string"
@@ -732,9 +784,17 @@
             "type": "string"
           },
           "expires_at_utc": {
-            "format": "date-time",
-            "title": "Expires At Utc",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the code stops resolving. NULL for a classroom join code, which does not expire: a teacher reads it aloud to a room and children write it down, so it stays valid until the classroom is deleted.",
+            "title": "Expires At Utc"
           },
           "invite_token": {
             "anyOf": [
@@ -762,7 +822,6 @@
           "classroom_invite_id",
           "invite_token",
           "token_already_issued",
-          "expires_at_utc",
           "created_at_utc",
           "request_id"
         ],
@@ -915,7 +974,8 @@
             "enum": [
               "PENDING",
               "APPROVED",
-              "REJECTED"
+              "REJECTED",
+              "REMOVED"
             ],
             "title": "State",
             "type": "string"
@@ -1045,7 +1105,8 @@
             "enum": [
               "PENDING",
               "APPROVED",
-              "REJECTED"
+              "REJECTED",
+              "REMOVED"
             ],
             "title": "State",
             "type": "string"
@@ -1108,7 +1169,8 @@
             "enum": [
               "PENDING",
               "APPROVED",
-              "REJECTED"
+              "REJECTED",
+              "REMOVED"
             ],
             "title": "State",
             "type": "string"
@@ -1192,7 +1254,8 @@
             "enum": [
               "PENDING",
               "APPROVED",
-              "REJECTED"
+              "REJECTED",
+              "REMOVED"
             ],
             "title": "State",
             "type": "string"
@@ -2817,6 +2880,70 @@
           }
         },
         "summary": "Get Classroom",
+        "tags": [
+          "profiles-and-classrooms"
+        ]
+      }
+    },
+    "/api/v1/classrooms/{classroom_id}/delete": {
+      "post": {
+        "operationId": "delete_classroom_api_v1_classrooms__classroom_id__delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "classroom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Classroom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassroomDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassroomDeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Classroom",
         "tags": [
           "profiles-and-classrooms"
         ]

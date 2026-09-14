@@ -94,6 +94,16 @@ class SupabaseJwtVerifier:
                 issuer=self._issuer,
                 audience=self._audience,
                 options=options,
+                # Small clock-skew tolerance against `exp`/`iat`/`nbf`. Supabase issues tokens from
+                # its own clock; this server's clock is never guaranteed to be perfectly
+                # synchronized with it (ordinary NTP jitter in production, or a VM clock that lags
+                # briefly after a host resumes from sleep in local development) -- without leeway a
+                # token minted and used within the same second can be rejected as "not yet valid"
+                # purely from a few hundred milliseconds of drift, which is not a security property
+                # worth enforcing that tightly. 30s is well inside what every major JWT library
+                # documents as a normal leeway default range and far smaller than the token's own
+                # 1-hour lifetime.
+                leeway=30,
             )
         except (InvalidTokenError, PyJWKClientError, ValueError, TypeError) as exc:
             raise AuthenticationRequiredError() from exc

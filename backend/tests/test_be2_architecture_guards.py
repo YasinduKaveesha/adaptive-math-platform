@@ -145,6 +145,8 @@ EXPECTED_ROUTES = {
     ("/api/v1/learner/profile", ("GET", "POST")),
     ("/api/v1/classrooms", ("GET", "POST")),
     ("/api/v1/classrooms/{classroom_id}", ("GET",)),
+    # 2026-09-14 -- teacher-initiated classroom soft delete (migration 20260914_0009).
+    ("/api/v1/classrooms/{classroom_id}/delete", ("POST",)),
     ("/api/v1/classrooms/{classroom_id}/invites", ("POST",)),
     ("/api/v1/classroom-invites/{classroom_invite_id}/revoke", ("POST",)),
     ("/api/v1/classroom-invites/resolve", ("POST",)),

@@ -503,12 +503,15 @@ class TeacherProfileRepository(SqlAlchemyNeutralRepository[TeacherProfile]):
 class ClassroomRepository(SqlAlchemyNeutralRepository[Classroom]):
     model_type = Classroom
 
+    # Both teacher-facing reads exclude soft-deleted classrooms (20260914_0009). Every
+    # teacher command resolves its classroom through get_owned, so a deleted classroom cannot
+    # be fetched, listed, invited to, have its requests listed, or be deleted twice.
     async def list_owned(self, teacher_profile_id: UUID) -> list[Classroom]:
-        result = await self.session.scalars(select(Classroom).where(Classroom.teacher_profile_id == teacher_profile_id).order_by(Classroom.created_at_utc, Classroom.classroom_id))
+        result = await self.session.scalars(select(Classroom).where(Classroom.teacher_profile_id == teacher_profile_id, Classroom.deleted_at_utc.is_(None)).order_by(Classroom.created_at_utc, Classroom.classroom_id))
         return list(result)
 
     async def get_owned(self, classroom_id: UUID, teacher_profile_id: UUID) -> Classroom | None:
-        return await self.session.scalar(select(Classroom).where(Classroom.classroom_id == classroom_id, Classroom.teacher_profile_id == teacher_profile_id))
+        return await self.session.scalar(select(Classroom).where(Classroom.classroom_id == classroom_id, Classroom.teacher_profile_id == teacher_profile_id, Classroom.deleted_at_utc.is_(None)))
 
 
 class ClassroomInviteRepository(SqlAlchemyNeutralRepository[ClassroomInvite]):
@@ -517,11 +520,29 @@ class ClassroomInviteRepository(SqlAlchemyNeutralRepository[ClassroomInvite]):
     async def find_by_token_hash(self, token_hash: str) -> ClassroomInvite | None:
         return await self.session.scalar(select(ClassroomInvite).where(ClassroomInvite.token_hash == token_hash))
 
+    async def find_live_by_classroom(self, classroom_id: UUID) -> ClassroomInvite | None:
+        """The classroom's one live join code, if it has one.
+
+        A classroom has at most one non-revoked invite: the code is created with the
+        classroom, never expires and is never rotated, so minting a second would leave two
+        codes resolving to the same room with only one of them readable by the teacher.
+        """
+        return await self.session.scalar(
+            select(ClassroomInvite).where(
+                ClassroomInvite.classroom_id == classroom_id,
+                ClassroomInvite.revoked_at_utc.is_(None),
+            )
+        )
+
     async def get_owned(self, classroom_invite_id: UUID, teacher_profile_id: UUID) -> ClassroomInvite | None:
         statement = (
             select(ClassroomInvite)
             .join(Classroom, Classroom.classroom_id == ClassroomInvite.classroom_id)
-            .where(ClassroomInvite.classroom_invite_id == classroom_invite_id, Classroom.teacher_profile_id == teacher_profile_id)
+            .where(
+                ClassroomInvite.classroom_invite_id == classroom_invite_id,
+                Classroom.teacher_profile_id == teacher_profile_id,
+                Classroom.deleted_at_utc.is_(None),
+            )
         )
         return await self.session.scalar(statement)
 
@@ -538,7 +559,11 @@ class ClassroomMembershipRepository(SqlAlchemyNeutralRepository[ClassroomMembers
         statement = (
             select(ClassroomMembership)
             .join(Classroom, Classroom.classroom_id == ClassroomMembership.classroom_id)
-            .where(ClassroomMembership.classroom_membership_id == classroom_membership_id, Classroom.teacher_profile_id == teacher_profile_id)
+            .where(
+                ClassroomMembership.classroom_membership_id == classroom_membership_id,
+                Classroom.teacher_profile_id == teacher_profile_id,
+                Classroom.deleted_at_utc.is_(None),
+            )
         )
         return await self.session.scalar(statement)
 
@@ -576,7 +601,9 @@ class ClassroomMembershipRepository(SqlAlchemyNeutralRepository[ClassroomMembers
         statement = (
             select(ClassroomMembership, Classroom.name, Classroom.grade)
             .join(Classroom, Classroom.classroom_id == ClassroomMembership.classroom_id)
-            .where(ClassroomMembership.learner_id == learner_id)
+            # A membership that ended with its classroom's deletion is not shown to the
+            # learner: with nothing left, the app sends them back to enter a classroom code.
+            .where(ClassroomMembership.learner_id == learner_id, ClassroomMembership.state != "REMOVED")
             .order_by(ClassroomMembership.requested_at_utc, ClassroomMembership.classroom_membership_id)
         )
         result = await self.session.execute(statement)

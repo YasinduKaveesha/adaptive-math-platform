@@ -21,9 +21,14 @@ const mockCharge = {
 jest.mock('@/src/features/navigation/adventure-charge-context', () => ({
   useAdventureCharge: () => mockCharge,
 }));
+// The compD tab reads the signed-in learner's subject to pick its destination from the cache.
+jest.mock('@/src/auth/auth-context', () => ({
+  useAuth: () => ({ me: { principal: { user_id: 'subject-1' } } }),
+}));
 
 import { router } from 'expo-router';
 
+import { clearCompdLearnerStates, writeCompdLearnerState } from '@/src/features/compd/compd-state-cache';
 import { LearnerTabBar } from '@/src/features/navigation/learner-tab-bar';
 
 describe('LearnerTabBar', () => {
@@ -33,9 +38,37 @@ describe('LearnerTabBar', () => {
     const { getByLabelText } = await render(<LearnerTabBar activeTab="home" playEnabled />);
     expect(getByLabelText(/^Play tab/)).toBeTruthy();
     expect(getByLabelText(/^Home tab/)).toBeTruthy();
-    // Labelled "compD", not "Profile" (owner request, 2026-10-20). The route and `activeTab` key
-    // are both unchanged -- only the word under the icon.
-    expect(getByLabelText(/^compD tab/)).toBeTruthy();
+    // Labelled "Learn", the word drawn into its brain artwork (owner request, 2026-10-21). It opens
+    // Component D (compD) rather than the learner profile, which the header greeting still opens.
+    expect(getByLabelText(/^Learn tab/)).toBeTruthy();
+  });
+
+  it('sends a learner with no known compD state to the compD gate', async () => {
+    clearCompdLearnerStates();
+    const { getByLabelText } = await render(<LearnerTabBar activeTab="home" playEnabled />);
+    fireEvent.press(getByLabelText(/^Learn tab/));
+    expect(router.replace).toHaveBeenCalledWith('/(learner)/compd');
+  });
+
+  it('goes straight to compD home once this session knows the intro is done', async () => {
+    clearCompdLearnerStates();
+    writeCompdLearnerState('subject-1', { intro_completed: true, language: 'en' });
+    const { getByLabelText } = await render(<LearnerTabBar activeTab="home" playEnabled />);
+    fireEvent.press(getByLabelText(/^Learn tab/));
+    expect(router.replace).toHaveBeenCalledWith('/(learner)/compd/home');
+  });
+
+  it('lets a current compD tab be pressed to return to compD home when enabled', async () => {
+    clearCompdLearnerStates();
+    writeCompdLearnerState('subject-1', { intro_completed: true, language: 'en' });
+    const { getByLabelText } = await render(<LearnerTabBar activeCompdPressEnabled activeTab="compd" playEnabled />);
+    fireEvent.press(getByLabelText(/^Learn tab, selected/));
+    expect(router.replace).toHaveBeenCalledWith('/(learner)/compd/home');
+  });
+
+  it('shows no tab as selected on the learner profile', async () => {
+    const { queryByLabelText } = await render(<LearnerTabBar activeTab={null} playEnabled />);
+    expect(queryByLabelText(/selected/)).toBeNull();
   });
 
   it('marks the active tab as selected and does not navigate away from it', async () => {

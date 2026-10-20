@@ -13,6 +13,7 @@ from app.infrastructure.persistence_models import (
     CRuntimeBundleRecord, CSafetyEventRecord, CScaffoldEventRecord,
     CSessionRecord, CTaskInstanceRecord, CTaskOpportunityRecord, CTaskOpportunitySummaryRecord,
     CTaskOpportunityVerdictRecord,
+    DCognitiveProfileRecord, DInteractionRecord, DLearnerStateRecord,
     HintEventRecord, IdempotencyRecord,
     ItemOpportunityRecord, Learner, LearnerSkillStateRecord, PresentationTokenRecord,
     RuntimeBundleRecord, SessionAggregateResultRecord, SessionEvent, SessionRecord,
@@ -999,5 +1000,84 @@ class SkillCertificationResultRepository(SqlAlchemyNeutralRepository[SkillCertif
     async def list_for_session(self, session_id: UUID) -> list[SkillCertificationResultRecord]:
         result = await self.session.scalars(
             select(SkillCertificationResultRecord).where(SkillCertificationResultRecord.session_id == session_id)
+        )
+        return list(result)
+
+
+# =====================================================================================
+# Component D (Component D authorization, owner decision D-011 A1, 2026-10-21).
+#
+# Added here rather than in a new `d_repositories.py` so that every repository in the backend
+# stays in one place -- the host has kept B's, C's and the shared tables together in this file
+# since BE2, and a separate module for D alone would make "where do repositories live" have two
+# answers.
+# =====================================================================================
+
+
+class DLearnerStateRepository(SqlAlchemyNeutralRepository[DLearnerStateRecord]):
+    """One row per learner. A learner with NO ROW is a supported state, not an error -- the
+    contract reads it as ``{intro_completed: false, language: "en"}`` and creates nothing."""
+
+    model_type = DLearnerStateRecord
+
+    async def find_for_learner(self, learner_id: UUID) -> DLearnerStateRecord | None:
+        return await self.session.get(DLearnerStateRecord, learner_id)
+
+    async def get_for_update(self, learner_id: UUID) -> DLearnerStateRecord | None:
+        """``populate_existing=True`` for the same reason ``LearnerSkillStateRepository`` gives:
+        the upsert reads this row after an advisory lock, and if anything earlier in the same
+        request already loaded it, the identity map would hand back the pre-lock attributes
+        instead of what the locked read actually found."""
+        return await self.session.scalar(
+            select(DLearnerStateRecord)
+            .where(DLearnerStateRecord.learner_id == learner_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+
+class DInteractionRepository(SqlAlchemyNeutralRepository[DInteractionRecord]):
+    """The raw per-question evidence a profile was computed from. No update or delete method by
+    design: once a run is recorded, what the child did is not editable."""
+
+    model_type = DInteractionRecord
+
+    async def list_for_session(self, session_id: UUID) -> list[DInteractionRecord]:
+        result = await self.session.scalars(
+            select(DInteractionRecord)
+            .where(DInteractionRecord.session_id == session_id)
+            .order_by(DInteractionRecord.question_id)
+        )
+        return list(result)
+
+
+class DCognitiveProfileRepository(SqlAlchemyNeutralRepository[DCognitiveProfileRecord]):
+    """One profile per profiling run. ``session_id`` is unique GLOBALLY, which is what lets
+    ``find_for_session`` be a single lookup and lets the route refuse another learner's session as
+    a 404 rather than reveal that it exists."""
+
+    model_type = DCognitiveProfileRecord
+
+    async def find_for_session(self, session_id: UUID) -> DCognitiveProfileRecord | None:
+        return await self.session.scalar(
+            select(DCognitiveProfileRecord).where(DCognitiveProfileRecord.session_id == session_id)
+        )
+
+    async def find_latest_for_learner(self, learner_id: UUID) -> DCognitiveProfileRecord | None:
+        return await self.session.scalar(
+            select(DCognitiveProfileRecord)
+            .where(DCognitiveProfileRecord.learner_id == learner_id)
+            .order_by(DCognitiveProfileRecord.generated_at.desc())
+            .limit(1)
+        )
+
+    async def list_for_learner(self, learner_id: UUID, limit: int) -> list[DCognitiveProfileRecord]:
+        """Newest first, which is the order the history screen renders and the order
+        ``ix_d_cognitive_profiles_learner_generated_at`` was created DESC to serve."""
+        result = await self.session.scalars(
+            select(DCognitiveProfileRecord)
+            .where(DCognitiveProfileRecord.learner_id == learner_id)
+            .order_by(DCognitiveProfileRecord.generated_at.desc())
+            .limit(limit)
         )
         return list(result)

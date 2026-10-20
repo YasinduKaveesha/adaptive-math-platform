@@ -2,26 +2,17 @@ import { Stack, usePathname } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useCompdQuizRunning } from '@/src/features/compd/compd-quiz-running';
 import { AdventureChargeProvider } from '@/src/features/navigation/adventure-charge-context';
 import { LearnerTabBar } from '@/src/features/navigation/learner-tab-bar';
+import { tabBarFor } from '@/src/features/navigation/learner-tab-visibility';
 import { colors } from '@/src/theme/tokens';
-
-/**
- * Which tab the bar should show as current, or `null` on the screens that have no bar at all --
- * the two full-screen game surfaces, which deliberately give the child nothing to navigate away
- * with except their own X button.
- */
-function activeTabFor(pathname: string): 'home' | 'profile' | null {
-  if (pathname.startsWith('/profile')) return 'profile';
-  // The preparation screen is part of the Home journey and shows Home as current, per its own
-  // original `activeTab="home"`.
-  if (pathname.startsWith('/home') || pathname.startsWith('/prepare')) return 'home';
-  return null;
-}
 
 export default function LearnerLayout() {
   const pathname = usePathname();
-  const activeTab = activeTabFor(pathname);
+  const compdQuizRunning = useCompdQuizRunning();
+  // Which screens show the bar, and which tab is current, lives in learner-tab-visibility.ts.
+  const tabBar = tabBarFor(pathname, compdQuizRunning);
 
   /**
    * THE TAB BAR LIVES HERE, NOT IN THE SCREENS.
@@ -43,12 +34,11 @@ export default function LearnerLayout() {
       <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
         <View style={styles.canvas}>
           <Stack screenOptions={{ animation: 'none', headerShown: false }} />
-          {activeTab ? (
-            // `activeHomePressEnabled` on the preparation screen only: there, pressing an already
-            // current Home must still go back to Home, which is what that screen asked for.
+          {tabBar.visible ? (
             <LearnerTabBar
-              activeHomePressEnabled={pathname.startsWith('/prepare')}
-              activeTab={activeTab}
+              activeCompdPressEnabled={tabBar.activeTab === 'compd' && tabBar.activePressEnabled}
+              activeHomePressEnabled={tabBar.activeTab === 'home' && tabBar.activePressEnabled}
+              activeTab={tabBar.activeTab}
               playEnabled
             />
           ) : null}

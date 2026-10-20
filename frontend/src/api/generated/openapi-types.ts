@@ -149,6 +149,133 @@ export interface CreateCSessionRequest {
   "session_mode": "combined" | "c_only";
 }
 
+/**
+ * The raw levels are carried as the engine produced them.
+ * 
+ * Owner decision **D-010** keeps compD's own labels (for example "Memory: low") on the
+ * child-facing page, as a research prototype that needs much more development and data
+ * collection. How that is worded for a child is the frontend's to render and is not a contract
+ * concern -- this shape stays descriptive.
+ * 
+ * ``model_version`` is a rule-based version until a trained model exists -- ``"rule-based-v2"``
+ * today, after the speed heuristic was corrected (``d_features.capped_mean_response_time_ms``).
+ * It is on the public
+ * shape so a reader can always tell which generation produced a profile; a history list can
+ * hold both.
+ */
+export interface DCognitiveProfile {
+  "attention_level": "low" | "medium" | "high";
+  "confidence_score": number;
+  "features": DCognitiveProfileFeatures;
+  "generated_at": string;
+  "memory_level": "low" | "medium" | "high";
+  "model_version": string;
+  "number_sense_level": "low" | "medium" | "high";
+  "processing_speed_level": "Slow" | "Moderate" | "Fast";
+  "recommendation": string;
+  "session_id": string;
+}
+
+/**
+ * The feature vector, returned as a unit because that is how it is computed and consumed.
+ * 
+ * ``total_questions`` is an int; everything else is a ratio or a duration. ``hint_rate`` keeps
+ * its name -- see this module's docstring for why that is clean at the public layer.
+ */
+export interface DCognitiveProfileFeatures {
+  "accuracy": number;
+  "avg_attempts": number;
+  "avg_response_time_ms": number;
+  "hint_rate": number;
+  "mean_clicks_per_question": number;
+  "response_time_std_ms": number;
+  "retry_rate": number;
+  "total_questions": number;
+}
+
+/**
+ * The single-profile response, for both the ``POST`` and the by-session ``GET``.
+ * 
+ * The ``POST`` returns the same 200 for a newly stored profile and for a repeat of one already
+ * stored (contract v4) -- a client that retries cannot tell the two apart, which is the point.
+ */
+export interface DCognitiveProfileResponse {
+  "profile": DCognitiveProfile;
+  "request_id": string;
+}
+
+/**
+ * One question answered in a profiling run -- the raw evidence a feature vector is computed
+ * from, and the row shape ``d_interactions`` stores.
+ * 
+ * The numeric bounds here are the same ones the table's CHECK constraints enforce
+ * (migration ``20261021_0010``), stated in both places on purpose: the API refuses a bad body
+ * with a 422 naming the field, and the database refuses it again if anything ever reaches it by
+ * another path.
+ */
+export interface DInteractionEvent {
+  "assist_used": boolean;
+  "attempts": number;
+  "click_count": number;
+  "difficulty": "Easy" | "Medium" | "Hard";
+  "error_type": "none" | "calculation" | "conceptual" | "careless" | "unknown";
+  "question_id": string;
+  "response_matched": boolean;
+  "response_time_sec": number;
+  "session_time_sec": number;
+  "time_between_actions": number;
+  "topic": "Counting" | "Addition" | "Subtraction" | "Division";
+}
+
+/**
+ * ``profile: null`` rather than a 404 when the learner has none.
+ * 
+ * A learner who has never done a profiling run is in a normal, expected state, and the home
+ * screen's empty state is a render of that -- not an error to recover from.
+ */
+export interface DLatestProfileResponse {
+  "profile": DCognitiveProfile | null;
+  "request_id": string;
+}
+
+/**
+ * ``intro_completed`` is derived from ``d_learner_state.intro_completed_at IS NOT NULL``.
+ * 
+ * A learner with no row reads as ``{intro_completed: false, language: "en"}`` and nothing is
+ * created -- the default belongs to the read, not to the table, so the table never holds a
+ * language the learner did not pick.
+ */
+export interface DLearnerStateResponse {
+  "intro_completed": boolean;
+  "language": "en" | "si";
+  "request_id": string;
+}
+
+/**
+ * At least one field is required; ``{}`` is a 422.
+ * 
+ * ``intro_completed`` is ``Literal[True]``, so ``false`` is a 422 too. The intro is a one-way
+ * door: a learner who has seen it cannot un-see it, and accepting ``false`` would let a client
+ * reset the first-run flow for a child who had already been through it.
+ */
+export interface DLearnerStateUpdateRequest {
+  "intro_completed"?: true | null;
+  "language"?: "en" | "si" | null;
+}
+
+export interface DProfileCreateRequest {
+  "events": (DInteractionEvent)[];
+  "language": "en" | "si";
+}
+
+/**
+ * Newest first.
+ */
+export interface DProfileListResponse {
+  "items": (DCognitiveProfile)[];
+  "request_id": string;
+}
+
 export interface HTTPValidationError {
   "detail"?: (ValidationError)[];
 }
@@ -594,6 +721,48 @@ export const CONTRACT_OPERATIONS: readonly ContractOperation[] = [
     "operationId": "create_classroom_api_v1_classrooms_post",
     "request": "ClassroomCreateRequest",
     "response": "ClassroomResponse"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/d/learner/profiles/latest",
+    "operationId": "get_latest_profile_api_v1_d_learner_profiles_latest_get",
+    "request": null,
+    "response": "DLatestProfileResponse"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/d/learner/profiles",
+    "operationId": "list_profiles_api_v1_d_learner_profiles_get",
+    "request": null,
+    "response": "DProfileListResponse"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/d/learner/state",
+    "operationId": "get_learner_state_api_v1_d_learner_state_get",
+    "request": null,
+    "response": "DLearnerStateResponse"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/d/learner/state",
+    "operationId": "update_learner_state_api_v1_d_learner_state_post",
+    "request": "DLearnerStateUpdateRequest",
+    "response": "DLearnerStateResponse"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/d/sessions/{session_id}/profile",
+    "operationId": "get_profile_api_v1_d_sessions__session_id__profile_get",
+    "request": null,
+    "response": "DCognitiveProfileResponse"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/d/sessions/{session_id}/profile",
+    "operationId": "create_profile_api_v1_d_sessions__session_id__profile_post",
+    "request": "DProfileCreateRequest",
+    "response": "DCognitiveProfileResponse"
   },
   {
     "method": "GET",

@@ -75,7 +75,7 @@
    "prompt_payload": {
     "target_number": 14
    },
-   "prompt_text": "Make this number with tens and ones.",
+   "prompt_text": "How many tens and how many ones?",
    "representation_mode": "symbolic",
    "request_id": "req-<uuid-9>",
    "scaffold_state": "C0",
@@ -109,7 +109,7 @@
    "prompt_payload": {
     "target_number": 10
    },
-   "prompt_text": "Make this number with tens and ones.",
+   "prompt_text": "How many tens and how many ones?",
    "representation_mode": "place_value_chart",
    "request_id": "req-<uuid-13>",
    "scaffold_state": "C0",
@@ -201,7 +201,7 @@
    "prompt_payload": {
     "target_number": 20
    },
-   "prompt_text": "Make this number with tens and ones.",
+   "prompt_text": "How many tens and how many ones?",
    "representation_mode": "base_ten_blocks",
    "request_id": "req-<uuid-23>",
    "scaffold_state": "C0",

@@ -7,6 +7,9 @@ import {
   LEARNER_TAB_BAR_HEIGHT_COMPACT,
   LEARNER_TAB_BAR_MARGIN_BOTTOM,
 } from '@/src/features/navigation/chrome-metrics';
+import { useAuth } from '@/src/auth/auth-context';
+import { compdEntryHref } from '@/src/features/compd/compd-gate';
+import { readCompdLearnerState } from '@/src/features/compd/compd-state-cache';
 import { artwork } from '@/src/utils/artwork';
 import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
 import { colors, radius, spacing } from '@/src/theme/tokens';
@@ -16,8 +19,8 @@ const tabArtwork = {
   playSelected: artwork.tabGameSelected,
   home: artwork.tabHome,
   homeSelected: artwork.tabHomeSelected,
-  profile: artwork.tabProfile,
-  profileSelected: artwork.tabProfileSelected,
+  learn: artwork.tabLearn,
+  learnSelected: artwork.tabLearnSelected,
 };
 
 // Re-exported; the values live in chrome-metrics.ts. See that file.
@@ -27,19 +30,24 @@ export {
   LEARNER_TAB_BAR_MARGIN_BOTTOM,
 };
 
-type LearnerTab = 'home' | 'play' | 'profile';
+// `null` = the bar is shown with no tab current: the learner profile page, which the header
+// greeting opens and which no longer has a tab of its own since the third tab became compD.
+export type LearnerTab = 'home' | 'play' | 'compd' | null;
 
 export function LearnerTabBar({
   activeTab,
+  activeCompdPressEnabled = false,
   activeHomePressEnabled = false,
   playEnabled = false,
 }: {
   activeTab: LearnerTab;
+  activeCompdPressEnabled?: boolean;
   activeHomePressEnabled?: boolean;
   playEnabled?: boolean;
 }) {
   const compact = useWindowDimensions().height < 760;
   const { requestPlay } = useAdventureCharge();
+  const { me } = useAuth();
 
   return (
     <View style={styles.dock}>
@@ -61,19 +69,23 @@ export function LearnerTabBar({
           selectedSource={tabArtwork.homeSelected}
           source={tabArtwork.home}
         />
-        {/* Labelled "compD" (owner request), not "Profile". The ROUTE is unchanged -- this is the
-            same /(learner)/profile screen it has always been, and `activeTab` still keys off
-            'profile'. Only the word under the icon changed, so nothing that navigates here or
-            tests this tab needs to know about the rename.
+        {/* Component D (compD, cognitive skill profiling). Once this app session knows the
+            learner has seen compD's intro, the tab goes straight to compD's home; otherwise it goes
+            to the gate, which asks the server. The cache is read at PRESS time, so finishing the
+            intro takes effect on the very next press.
 
-            The profile is still reachable by its own name: the "Hi, <name>!" greeting in the
-            header bar now goes to the same place. */}
+            The learner profile is still reachable through the "Hi, <name>!" header greeting.
+
+            Labelled "Learn" because that is the word drawn into its artwork (the brain icons, owner
+            request 2026-10-21); the label is what a screen reader announces, so it must match. */}
         <TabItem
-          active={activeTab === 'profile'}
-          label="compD"
-          onPress={() => router.replace('/(learner)/profile')}
-          selectedSource={tabArtwork.profileSelected}
-          source={tabArtwork.profile}
+          active={activeTab === 'compd'}
+          accessibilityHint="Opens your learning activities"
+          label="Learn"
+          onPress={() => router.replace(compdEntryHref(readCompdLearnerState(me?.principal.user_id ?? null)))}
+          pressWhenActive={activeCompdPressEnabled}
+          selectedSource={tabArtwork.learnSelected}
+          source={tabArtwork.learn}
         />
       </View>
     </View>

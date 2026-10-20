@@ -15,6 +15,7 @@ from app.api.routes.b_session import router as b_session_router
 from app.api.routes.c_session import router as c_session_router
 from app.api.routes.c_task import router as c_task_router
 from app.api.routes.classroom_membership import router as classroom_membership_router
+from app.api.routes.d_profile import router as d_profile_router
 from app.api.routes.health import router as health_router
 from app.api.routes.identity import router as identity_router
 from app.api.routes.profile_classroom import router as profile_classroom_router
@@ -126,6 +127,9 @@ def create_app() -> FastAPI:
     application.include_router(b_learner_router)
     application.include_router(c_session_router)
     application.include_router(c_task_router)
+    # Component D (Component D authorization, owner decision D-011 A2/A3): the six
+    # student-side cognitive-profiling routes.
+    application.include_router(d_profile_router)
     return application
 
 

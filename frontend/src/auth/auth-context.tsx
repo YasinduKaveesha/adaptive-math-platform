@@ -14,6 +14,7 @@ import { getAuthorizedLearner } from '@/src/api/client';
 import type { AuthorizedLearner } from '@/src/api/contracts';
 import { ApiClientError } from '@/src/api/errors';
 import { getSupabaseClient } from '@/src/auth/supabase';
+import { forgetCompdLearnerState } from '@/src/features/compd/compd-state-cache';
 import { forgetHomeSessionState } from '@/src/features/home/home-session-state-cache';
 import { clearLearnerSessionRecords } from '@/src/features/session/session-command-store';
 import { readPublicConfig, type PublicConfig } from '@/src/config/env';
@@ -346,6 +347,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
     // from `clearLocalSession` -- an expired token is not a change of learner, and the cached state
     // is still theirs.
     forgetHomeSessionState(me?.principal.user_id ?? null);
+    // Component D's intro/language cache, same scoping and same omission from `clearLocalSession`:
+    // the next learner on this device must reach compD through its own server answer.
+    forgetCompdLearnerState(me?.principal.user_id ?? null);
     if (config) {
       try {
         await getSupabaseClient(config).auth.signOut({ scope: 'local' });

@@ -688,6 +688,400 @@
         "title": "CreateCSessionRequest",
         "type": "object"
       },
+      "DCognitiveProfile": {
+        "additionalProperties": false,
+        "description": "The raw levels are carried as the engine produced them.\n\nOwner decision **D-010** keeps compD's own labels (for example \"Memory: low\") on the\nchild-facing page, as a research prototype that needs much more development and data\ncollection. How that is worded for a child is the frontend's to render and is not a contract\nconcern -- this shape stays descriptive.\n\n``model_version`` is a rule-based version until a trained model exists -- ``\"rule-based-v2\"``\ntoday, after the speed heuristic was corrected (``d_features.capped_mean_response_time_ms``).\nIt is on the public\nshape so a reader can always tell which generation produced a profile; a history list can\nhold both.",
+        "properties": {
+          "attention_level": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Attention Level",
+            "type": "string"
+          },
+          "confidence_score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence Score",
+            "type": "number"
+          },
+          "features": {
+            "$ref": "#/components/schemas/DCognitiveProfileFeatures"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "memory_level": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Memory Level",
+            "type": "string"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "number_sense_level": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Number Sense Level",
+            "type": "string"
+          },
+          "processing_speed_level": {
+            "enum": [
+              "Slow",
+              "Moderate",
+              "Fast"
+            ],
+            "title": "Processing Speed Level",
+            "type": "string"
+          },
+          "recommendation": {
+            "title": "Recommendation",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "memory_level",
+          "attention_level",
+          "number_sense_level",
+          "processing_speed_level",
+          "confidence_score",
+          "recommendation",
+          "model_version",
+          "features",
+          "generated_at"
+        ],
+        "title": "DCognitiveProfile",
+        "type": "object"
+      },
+      "DCognitiveProfileFeatures": {
+        "additionalProperties": false,
+        "description": "The feature vector, returned as a unit because that is how it is computed and consumed.\n\n``total_questions`` is an int; everything else is a ratio or a duration. ``hint_rate`` keeps\nits name -- see this module's docstring for why that is clean at the public layer.",
+        "properties": {
+          "accuracy": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Accuracy",
+            "type": "number"
+          },
+          "avg_attempts": {
+            "minimum": 0.0,
+            "title": "Avg Attempts",
+            "type": "number"
+          },
+          "avg_response_time_ms": {
+            "minimum": 0.0,
+            "title": "Avg Response Time Ms",
+            "type": "number"
+          },
+          "hint_rate": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Hint Rate",
+            "type": "number"
+          },
+          "mean_clicks_per_question": {
+            "minimum": 0.0,
+            "title": "Mean Clicks Per Question",
+            "type": "number"
+          },
+          "response_time_std_ms": {
+            "minimum": 0.0,
+            "title": "Response Time Std Ms",
+            "type": "number"
+          },
+          "retry_rate": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Retry Rate",
+            "type": "number"
+          },
+          "total_questions": {
+            "minimum": 0.0,
+            "title": "Total Questions",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accuracy",
+          "avg_response_time_ms",
+          "response_time_std_ms",
+          "avg_attempts",
+          "retry_rate",
+          "hint_rate",
+          "mean_clicks_per_question",
+          "total_questions"
+        ],
+        "title": "DCognitiveProfileFeatures",
+        "type": "object"
+      },
+      "DCognitiveProfileResponse": {
+        "additionalProperties": false,
+        "description": "The single-profile response, for both the ``POST`` and the by-session ``GET``.\n\nThe ``POST`` returns the same 200 for a newly stored profile and for a repeat of one already\nstored (contract v4) -- a client that retries cannot tell the two apart, which is the point.",
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/DCognitiveProfile"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "request_id"
+        ],
+        "title": "DCognitiveProfileResponse",
+        "type": "object"
+      },
+      "DInteractionEvent": {
+        "additionalProperties": false,
+        "description": "One question answered in a profiling run -- the raw evidence a feature vector is computed\nfrom, and the row shape ``d_interactions`` stores.\n\nThe numeric bounds here are the same ones the table's CHECK constraints enforce\n(migration ``20261021_0010``), stated in both places on purpose: the API refuses a bad body\nwith a 422 naming the field, and the database refuses it again if anything ever reaches it by\nanother path.",
+        "properties": {
+          "assist_used": {
+            "title": "Assist Used",
+            "type": "boolean"
+          },
+          "attempts": {
+            "minimum": 1.0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "click_count": {
+            "minimum": 0.0,
+            "title": "Click Count",
+            "type": "integer"
+          },
+          "difficulty": {
+            "enum": [
+              "Easy",
+              "Medium",
+              "Hard"
+            ],
+            "title": "Difficulty",
+            "type": "string"
+          },
+          "error_type": {
+            "enum": [
+              "none",
+              "calculation",
+              "conceptual",
+              "careless",
+              "unknown"
+            ],
+            "title": "Error Type",
+            "type": "string"
+          },
+          "question_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Question Id",
+            "type": "string"
+          },
+          "response_matched": {
+            "title": "Response Matched",
+            "type": "boolean"
+          },
+          "response_time_sec": {
+            "minimum": 0.0,
+            "title": "Response Time Sec",
+            "type": "number"
+          },
+          "session_time_sec": {
+            "minimum": 0.0,
+            "title": "Session Time Sec",
+            "type": "number"
+          },
+          "time_between_actions": {
+            "minimum": 0.0,
+            "title": "Time Between Actions",
+            "type": "number"
+          },
+          "topic": {
+            "enum": [
+              "Counting",
+              "Addition",
+              "Subtraction",
+              "Division"
+            ],
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question_id",
+          "topic",
+          "difficulty",
+          "response_time_sec",
+          "attempts",
+          "response_matched",
+          "assist_used",
+          "click_count",
+          "session_time_sec",
+          "time_between_actions",
+          "error_type"
+        ],
+        "title": "DInteractionEvent",
+        "type": "object"
+      },
+      "DLatestProfileResponse": {
+        "additionalProperties": false,
+        "description": "``profile: null`` rather than a 404 when the learner has none.\n\nA learner who has never done a profiling run is in a normal, expected state, and the home\nscreen's empty state is a render of that -- not an error to recover from.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DCognitiveProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "request_id"
+        ],
+        "title": "DLatestProfileResponse",
+        "type": "object"
+      },
+      "DLearnerStateResponse": {
+        "additionalProperties": false,
+        "description": "``intro_completed`` is derived from ``d_learner_state.intro_completed_at IS NOT NULL``.\n\nA learner with no row reads as ``{intro_completed: false, language: \"en\"}`` and nothing is\ncreated -- the default belongs to the read, not to the table, so the table never holds a\nlanguage the learner did not pick.",
+        "properties": {
+          "intro_completed": {
+            "title": "Intro Completed",
+            "type": "boolean"
+          },
+          "language": {
+            "enum": [
+              "en",
+              "si"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intro_completed",
+          "language",
+          "request_id"
+        ],
+        "title": "DLearnerStateResponse",
+        "type": "object"
+      },
+      "DLearnerStateUpdateRequest": {
+        "additionalProperties": false,
+        "description": "At least one field is required; ``{}`` is a 422.\n\n``intro_completed`` is ``Literal[True]``, so ``false`` is a 422 too. The intro is a one-way\ndoor: a learner who has seen it cannot un-see it, and accepting ``false`` would let a client\nreset the first-run flow for a child who had already been through it.",
+        "properties": {
+          "intro_completed": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intro Completed"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "enum": [
+                  "en",
+                  "si"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          }
+        },
+        "title": "DLearnerStateUpdateRequest",
+        "type": "object"
+      },
+      "DProfileCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DInteractionEvent"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Events",
+            "type": "array"
+          },
+          "language": {
+            "enum": [
+              "en",
+              "si"
+            ],
+            "title": "Language",
+            "type": "string"
+          }
+        },
+        "required": [
+          "language",
+          "events"
+        ],
+        "title": "DProfileCreateRequest",
+        "type": "object"
+      },
+      "DProfileListResponse": {
+        "additionalProperties": false,
+        "description": "Newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DCognitiveProfile"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "request_id"
+        ],
+        "title": "DProfileListResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3257,6 +3651,281 @@
         "summary": "List Membership Requests",
         "tags": [
           "classroom-invites-and-memberships"
+        ]
+      }
+    },
+    "/api/v1/d/learner/profiles": {
+      "get": {
+        "operationId": "list_profiles_api_v1_d_learner_profiles_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "si"
+              ],
+              "title": "Language",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DProfileListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Profiles",
+        "tags": [
+          "d-cognitive-profiling"
+        ]
+      }
+    },
+    "/api/v1/d/learner/profiles/latest": {
+      "get": {
+        "operationId": "get_latest_profile_api_v1_d_learner_profiles_latest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "si"
+              ],
+              "title": "Language",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DLatestProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Latest Profile",
+        "tags": [
+          "d-cognitive-profiling"
+        ]
+      }
+    },
+    "/api/v1/d/learner/state": {
+      "get": {
+        "operationId": "get_learner_state_api_v1_d_learner_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DLearnerStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Learner State",
+        "tags": [
+          "d-cognitive-profiling"
+        ]
+      },
+      "post": {
+        "operationId": "update_learner_state_api_v1_d_learner_state_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DLearnerStateUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DLearnerStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Learner State",
+        "tags": [
+          "d-cognitive-profiling"
+        ]
+      }
+    },
+    "/api/v1/d/sessions/{session_id}/profile": {
+      "get": {
+        "operationId": "get_profile_api_v1_d_sessions__session_id__profile_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "si"
+              ],
+              "title": "Language",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DCognitiveProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Profile",
+        "tags": [
+          "d-cognitive-profiling"
+        ]
+      },
+      "post": {
+        "description": "200, not 201, for both a new profile and a repeat.\n\nThe contract fixes this: a client that retries cannot tell whether its first attempt landed,\nand a 201-then-200 pair would tell it -- which is exactly the information an idempotent\nendpoint is supposed to make irrelevant.",
+        "operationId": "create_profile_api_v1_d_sessions__session_id__profile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DProfileCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DCognitiveProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Profile",
+        "tags": [
+          "d-cognitive-profiling"
         ]
       }
     },

@@ -18,7 +18,8 @@ import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/src/auth/auth-context';
 import { colors } from '@/src/theme/tokens';
-import { criticalArtwork, deferredArtwork } from '@/src/utils/artwork';
+import { artworkWarmUpOrder, criticalArtwork } from '@/src/utils/artwork';
+import { warmArtworkInOrder } from '@/src/utils/artwork-warm-up';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -148,20 +149,27 @@ export default function RootLayout() {
   const localReady = Boolean(fontsSettled) && artworkSettled;
 
   /**
-   * The rest of the artwork, warmed once the splash is down and the first interactions have had
-   * the thread. `runAfterInteractions` rather than a bare effect so this decode cannot compete
-   * with Home's own first frame -- the whole point of deferring it was to stop paying for it up
-   * front, and doing it eagerly here would simply move the cost rather than defer it.
+   * All artwork decoded into the image cache, in order (Home, B prep, C prep, C prep 2, B
+   * results), once the splash is down and the first interactions have had the thread. That is the
+   * sign-in screen for a signed-out child, so Home is already decoded when sign-in finishes.
+   * `runAfterInteractions` rather than a bare effect so this decode cannot compete with the first
+   * frame -- the whole point of deferring it was to stop paying for it up front, and doing it
+   * eagerly here would simply move the cost rather than defer it. Order and caching:
+   * `artworkWarmUpOrder` (src/utils/artwork.ts) and `warmArtworkInOrder`.
    *
-   * Still `.then(settle, settle)`-style best-effort: nothing reads the outcome, and a failure
-   * leaves the screens that use these images to load them on demand exactly as they would have.
+   * Best-effort: nothing reads the outcome, and a failure leaves the screens that use these images
+   * to load them on demand exactly as they would have.
    */
   useEffect(() => {
     if (!localReady) return;
+    let cancelled = false;
     const task = InteractionManager.runAfterInteractions(() => {
-      void Asset.loadAsync([...deferredArtwork]).catch(() => undefined);
+      void warmArtworkInOrder(artworkWarmUpOrder, () => cancelled);
     });
-    return () => task.cancel();
+    return () => {
+      cancelled = true;
+      task.cancel();
+    };
   }, [localReady]);
 
   return (

@@ -46,10 +46,23 @@ export const artwork = {
   startGame: require('../../assets/images/StartGame.webp'),
   tabGame: require('../../assets/images/tabs/game.webp'),
   tabGameSelected: require('../../assets/images/tabs/game-selected.webp'),
+  // Replaced 2026-10-21 from the owner's 1254x1254 `home.png`, on the same recipe as `tabLearn`
+  // below: 256x256 WebP q92 with `webp:use-sharp-yuv=true`, 1_189_086 -> 4_040 bytes, DSSIM 0.0034.
   tabHome: require('../../assets/images/tabs/home.webp'),
   tabHomeSelected: require('../../assets/images/tabs/home-selected.webp'),
-  tabProfile: require('../../assets/images/tabs/profile.webp'),
-  tabProfileSelected: require('../../assets/images/tabs/profile-selected.webp'),
+  /**
+   * The third tab, "Learn" (Component D / compD). It replaced the flamingo "Profile" artwork when
+   * that tab stopped opening the learner profile (2026-10-21).
+   *
+   * Converted from the owner's 1254x1254 PNGs (`brainInnactive.png`, `brainActive.png`) to 256x256
+   * WebP q92, the size and quality of the other five tab icons: 1_132_498 -> 4_078 bytes and
+   * 1_039_730 -> 6_472 bytes. Both sides are RGB with no alpha, so DSSIM was measured directly
+   * against a lossless 256x256 resize: 0.0020 and 0.0078, inside the tab icons' 0.001-0.009 band.
+   * The selected icon needed `webp:use-sharp-yuv=true` to get there -- plain q92 measured 0.0119 on
+   * its saturated pink -- and the inactive icon uses the same setting so both share one recipe.
+   */
+  tabLearn: require('../../assets/images/tabs/learn.webp'),
+  tabLearnSelected: require('../../assets/images/tabs/learn-selected.webp'),
 } as const;
 
 /** Every entry above. Kept as the completeness check the two lists below are derived from. */
@@ -84,8 +97,8 @@ export const criticalArtwork: readonly number[] = [
   artwork.tabGameSelected,
   artwork.tabHome,
   artwork.tabHomeSelected,
-  artwork.tabProfile,
-  artwork.tabProfileSelected,
+  artwork.tabLearn,
+  artwork.tabLearnSelected,
 ];
 
 /**
@@ -101,4 +114,28 @@ export const deferredArtwork: readonly number[] = [
   artwork.prepareHero,
   artwork.startGame,
   artwork.cTaskBackground,
+];
+
+/**
+ * THE ORDER ARTWORK IS DECODED INTO THE IMAGE CACHE (owner request, 2026-10-21), one step at a
+ * time by `warmArtworkInOrder` (src/utils/artwork-warm-up.ts), so each screen is instant when it
+ * opens, in the order a child reaches them:
+ *
+ *   1. Home -- `criticalArtwork` (header, hero, learning path, tab bar). The splash already made
+ *      these files local; this step decodes them, so Home is instant even when it follows sign-in.
+ *   2. Component B preparation screen -- `prepareHero`.
+ *   3. Component C, first prep -- the Play prep card on Home, `startGame`.
+ *   4. Component C, second prep -- the challenge-choice screen and task card, `cTaskBackground`.
+ *   5. Component B's last screen, the session results -- `heroSection`, `learningPath` and
+ *      `startGame`. All three are already cached by the steps above, so this step is a cache hit;
+ *      it is listed so the results screen stays covered if an earlier step ever changes.
+ *
+ * Every image in `deferredArtwork` must appear here (src/api/__tests__/startup-splash-gate.test.ts).
+ */
+export const artworkWarmUpOrder: readonly (readonly number[])[] = [
+  criticalArtwork,
+  [artwork.prepareHero],
+  [artwork.startGame],
+  [artwork.cTaskBackground],
+  [artwork.heroSection, artwork.learningPath, artwork.startGame],
 ];

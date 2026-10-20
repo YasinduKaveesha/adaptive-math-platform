@@ -91,8 +91,8 @@ test('the chrome shared by every learner route is critical', () => {
     'tabHomeSelected',
     'tabGame',
     'tabGameSelected',
-    'tabProfile',
-    'tabProfileSelected',
+    'tabLearn',
+    'tabLearnSelected',
   ]) {
     assert.ok(critical.includes(name), `${name} is persistent chrome and must be critical`);
   }
@@ -111,9 +111,32 @@ test('the preloader awaits criticalArtwork, not allArtwork', () => {
   );
   assert.match(
     layoutSource,
-    /runAfterInteractions\([\s\S]{0,200}?deferredArtwork/,
+    /runAfterInteractions\([\s\S]{0,200}?warmArtworkInOrder\(artworkWarmUpOrder/,
     'the deferred artwork must be warmed after interactions, not eagerly alongside first paint',
   );
+});
+
+// Owner request, 2026-10-21: artwork is decoded into the image cache one screen at a time, in the
+// order a child reaches them, so each is instant when opened.
+const warmUpSteps = [...sliceAfter('export const artworkWarmUpOrder').matchAll(/^ {2}(criticalArtwork|\[[^\]]*\]),$/gm)].map(
+  (match) => (match[1] === 'criticalArtwork' ? ['criticalArtwork'] : [...match[1].matchAll(/artwork\.(\w+)/g)].map((key) => key[1])),
+);
+
+test('artwork is warmed in order: Home, B prep, C prep, C prep 2, then B results', () => {
+  assert.deepEqual(warmUpSteps, [
+    ['criticalArtwork'],
+    ['prepareHero'],
+    ['startGame'],
+    ['cTaskBackground'],
+    ['heroSection', 'learningPath', 'startGame'],
+  ]);
+});
+
+test('every deferred image is in the warm-up, so none is left to load on first view', () => {
+  const warmed = new Set(warmUpSteps.flat());
+  for (const name of deferred) {
+    assert.ok(warmed.has(name), `${name} is deferred but never warmed`);
+  }
 });
 
 test('AuthProvider is mounted above the splash gate, so auth runs under the splash', () => {

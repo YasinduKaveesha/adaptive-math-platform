@@ -17,6 +17,7 @@ keeps the 13 explicitly prohibited research/synthetic modules unreachable from `
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Mapping, Optional, Sequence
 
 from component_b_generator.answers.registry import (
@@ -158,6 +159,12 @@ def _map_catalogue(catalogue) -> Catalogue:
     )
 
 
+@lru_cache(maxsize=8)
+def _load_package_catalogue_cached(source_path: str):
+    """The parse itself, memoised per governed path. See ``_load_package_catalogue``."""
+    return _pkg_load_catalogue(source_path)
+
+
 def _load_package_catalogue(source_path: str):
     """Re-load the package's own ``LoadedCatalogue`` from the same governed path.
 
@@ -166,9 +173,25 @@ def _load_package_catalogue(source_path: str):
     reconstructing a package Pydantic model by hand from the trimmed domain ``Catalogue`` — so
     the object handed to the reviewed package functions is always the real, fully-validated
     loader output, never a hand-rolled approximation of it.
+
+    PARSED ONCE PER PATH, not once per call. That intent above is about *what* the package
+    receives -- genuine loader output rather than a hand-rolled approximation -- and memoising
+    preserves it exactly: the cached object IS `_pkg_load_catalogue`'s own fully-validated
+    output. What it stops is re-deriving it dozens of times inside a single request. Because
+    "every port method" re-derives, one adaptive selection called this 50 times (36
+    `decide_activation` + 14 `compute_features`), and each call was a full `yaml.safe_load` of
+    the packaged catalogue: ~79ms apiece, ~1.1s of pure CPU per question asked, which was the
+    single largest cost in `POST .../complete` and larger than all of its 18 database round
+    trips combined.
+
+    Safe to share because the catalogue is immutable at runtime -- it ships inside the vendored
+    wheel and is read-only in the image -- and because the package functions handed the object
+    are the reviewed pure ones (`select_candidate` is documented as a pure, side-effect-free
+    core). Nothing mutates what it is given. `lru_cache` does not cache exceptions, so an
+    unreadable or invalid catalogue still raises on every attempt exactly as before.
     """
     try:
-        return _pkg_load_catalogue(source_path)
+        return _load_package_catalogue_cached(source_path)
     except _PkgCatalogueValidationError as exc:
         raise CatalogueUnavailableError(str(exc)) from exc
 

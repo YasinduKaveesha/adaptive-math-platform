@@ -124,7 +124,12 @@ def test_missing_and_malformed_authorization_headers() -> None:
     "token",
     [
         "not-a-jwt",
-        make_token(expires_delta=timedelta(seconds=-1)),
+        # Must fall OUTSIDE the 30-second clock-skew leeway `SupabaseJwtVerifier` allows on
+        # `exp`/`iat`/`nbf` (app/infrastructure/auth.py). This was -1s, which the leeway
+        # swallowed once that leeway was added (2026-09-14): the token verified, and this
+        # fail-closed case silently stopped asserting anything. -2 minutes is unambiguously
+        # expired at any tolerance this server would reasonably carry.
+        make_token(expires_delta=timedelta(minutes=-2)),
         make_token(issuer="https://wrong.example/auth/v1"),
         make_token(audience="wrong-audience"),
         make_token(key=KEY_2),
@@ -139,6 +144,19 @@ def test_invalid_tokens_fail_closed(token: str) -> None:
 def test_not_before_is_validated() -> None:
     future = datetime.now(UTC) + timedelta(minutes=5)
     assert_rejected(make_token(extra_claims={"nbf": future}))
+
+
+def test_expiry_leeway_is_bounded() -> None:
+    """The clock-skew tolerance on `exp` is a narrow allowance, not an open window.
+
+    The verifier deliberately accepts a token a few seconds past `exp` so ordinary NTP jitter (or
+    a VM clock that lags after the host resumes) cannot reject a token minted seconds earlier.
+    That tolerance is 30s. This pins the far side of it: 90 seconds past `exp` is expired, and
+    stays expired. Without this, widening `leeway` later would quietly turn the "expired" case in
+    `test_invalid_tokens_fail_closed` back into a token the verifier accepts -- which is exactly
+    how that case stopped testing anything the first time.
+    """
+    assert_rejected(make_token(expires_delta=timedelta(seconds=-90)))
 
 
 def test_subject_is_required_and_nonempty() -> None:
@@ -199,7 +217,7 @@ def test_token_and_credentials_do_not_appear_in_logs() -> None:
     stream = StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(JsonFormatter())
-    logger = logging.getLogger("upadya.http")
+    logger = logging.getLogger("studentapp.http")
     logger.addHandler(handler)
     app.dependency_overrides[get_jwt_verifier] = lambda: verifier()
     try:

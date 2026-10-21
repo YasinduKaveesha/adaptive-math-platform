@@ -58,7 +58,6 @@ from app.domain.runtime_bundle.errors import RuntimeBundleError
 from app.domain.runtime_bundle.readiness import assert_catalogue_matches_bundle
 from app.infrastructure.persistence_models import AppUser, HintEventRecord, IdempotencyRecord
 from app.infrastructure.repositories import (
-    AppUserLearnerLinkRepository,
     AppUserRepository,
     HintEventRepository,
     IdempotencyRecordRepository,
@@ -95,7 +94,7 @@ def provenance(user_id: UUID, request_id: str, operation: str, resource_type: st
         "resource_type": resource_type,
         "resource_id": resource_id,
         "source_class": "TEST",
-        "source_system": "upadya-api",
+        "source_system": "studentapp-api",
         "environment": "live-endpoint",
         "schema_revision": SCHEMA_REVISION,
     }
@@ -109,12 +108,12 @@ class HintRequestService:
         self._uow_factory = uow_factory
 
     async def _require_learner(self, session: AsyncSession, principal: AuthenticatedPrincipal) -> tuple[AppUser, UUID]:
-        user = await AppUserRepository(session).find_by_subject(principal.user_id)
-        if user is None:
+        found = await AppUserRepository(session).find_with_learner_link_by_subject(principal.user_id)
+        if found is None:
             raise ResourceNotFoundError()
+        user, link = found
         if user.profile_type != "LEARNER":
             raise ForbiddenError()
-        link = await AppUserLearnerLinkRepository(session).find_by_user(user.user_id)
         if link is None:
             raise ResourceNotFoundError()
         return user, link.learner_id

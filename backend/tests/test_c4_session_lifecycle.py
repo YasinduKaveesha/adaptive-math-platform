@@ -164,6 +164,7 @@ def _create_session_kwargs(**overrides: object) -> dict[str, object]:
         "policy_parameter_source_status": "TEST_FIXTURE_ONLY",
         "scaffold_parameter_source_status": "TEST_FIXTURE_ONLY",
         "aggregation_parameter_source_status": "TEST_FIXTURE_ONLY",
+        "q_policy_parameter_source_status": "TEST_FIXTURE_ONLY",   # LIVE-01: new gated family
         "smoke_mode": True,
         "request_id": f"req-{uuid4()}",
         "mastery_by_skill": fixture_b_mastery_payload_for_phase_4(),

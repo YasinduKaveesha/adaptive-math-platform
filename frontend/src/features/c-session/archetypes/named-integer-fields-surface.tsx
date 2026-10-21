@@ -68,7 +68,9 @@ import {
   useNamedFieldEntry,
   type NamedField,
 } from '@/src/features/c-session/primitives/named-field-row';
+import { taskPromptCardStyle } from '@/src/features/c-session/task-prompt-card';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { TASK_SURFACE_PADDING } from '@/src/features/c-session/task-layout';
 
 // A SMALLER, FIXED SIZE THAN `value-report-surface.tsx`'s own payload token, DELIBERATELY (2026-08-26
 // correction, found by the owner testing C-BT-02: the wider `* 1.6` size wraps a 4-column row --
@@ -169,25 +171,35 @@ function NamedIntegerFieldsScene({ accent, onSubmit, spec }: NamedIntegerFieldsS
             <View style={styles.gridWrapper}>
               <ArrayGrid accent={accent} cols={spec.grid.cols} rows={spec.grid.rows} />
             </View>
-          ) : (
-            <View style={styles.payloadRow}>
-              {orderedPayloadValues.map((payloadValue, index) => (
-                <View key={`${payloadValue.key}-${index}`} style={styles.payloadColumn}>
-                  <View style={styles.payloadLabelBlock}>
-                    <AppText style={[styles.payloadLabel, { color: accent }]}>{payloadValue.label}</AppText>
-                  </View>
-                  <View style={styles.payloadToken}>
-                    <AppText style={styles.payloadTokenText}>{payloadValue.value}</AppText>
-                  </View>
-                </View>
-              ))}
-            </View>
-          )}
+          ) : null}
         </View>
         {spec.grid !== null ? (
           <EquationFieldsRow accent={accent} entry={entry} fields={spec.fields} />
         ) : (
-          <View style={styles.fieldsRow}>
+          /* ONE ROW, given values and entry boxes together (owner instruction, 2026-10-10).
+             
+             These were two stacked rows -- the given number in `promptBlock`, the entry boxes in a
+             sibling `fieldsRow` -- so "Number 7" sat on its own line above "Tens | Ones". A
+             decomposition reads as one statement, and splitting it across two lines made the given
+             number look like part of the question text rather than one of the quantities.
+             
+             EVERY LABEL IS NOW BELOW ITS BOX, including the given value's, which previously sat
+             ABOVE it. That is not cosmetic: with the two kinds of column side by side, mixed label
+             placement would put the boxes at different heights within the row (one column being
+             label-then-box, the other box-then-label), so the numbers would not line up. Uniform
+             placement is what makes a single row legible, and it follows the 2026-08-26 request
+             that moved the entry labels below in the first place. */
+          <View style={styles.valuesRow}>
+            {orderedPayloadValues.map((payloadValue, index) => (
+              <View key={`${payloadValue.key}-${index}`} style={styles.payloadColumn}>
+                <View style={styles.payloadToken}>
+                  <AppText style={styles.payloadTokenText}>{payloadValue.value}</AppText>
+                </View>
+                <View style={styles.payloadLabelBlockBelow}>
+                  <AppText style={[styles.payloadLabel, { color: accent }]}>{payloadValue.label}</AppText>
+                </View>
+              </View>
+            ))}
             {orderedFields.map((field) => (
               <View key={field.key} style={styles.payloadColumn}>
                 <NamedFieldBox
@@ -297,11 +309,14 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: spacing.lg,
     justifyContent: 'space-between',
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   // Same row shape as `payloadRow` below -- kept as its own name only so this file's JSX reads
   // clearly ("the fields row"), not because the styling itself differs.
-  fieldsRow: {
+  // Holds the given values AND the entry boxes, in that order, on one line -- see the note at its
+  // JSX. `flexWrap` is kept: a task with enough quantities to exceed the card's width must wrap
+  // rather than overflow, and `rowGap` keeps those wrapped lines from touching.
+  valuesRow: {
     alignItems: 'center',
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -332,7 +347,12 @@ const styles = StyleSheet.create({
   // Groups the prompt block and the fields row at half the container's own gap (2026-08-26
   // request), so the fields sit close under the given number rather than at the container's normal
   // spacing (which still separates this whole group from the keypad and SUBMIT below it).
+  // THE QUESTION CARD (owner instruction, 2026-09-28). It was `promptBlock` below, which holds the
+  // question and the given number but NOT the entry boxes -- so "Tens" and "Ones" sat outside the
+  // card, visually separated from the number they decompose. This group is the right boundary: it
+  // already contains both, and the child reads the whole thing as one question.
   promptAndFieldsGroup: {
+    ...taskPromptCardStyle,
     gap: spacing.lg / 2,
   },
   // Pulls the keypad up to half the container's own gap below the fields row (2026-08-26 request) --
@@ -361,25 +381,19 @@ const styles = StyleSheet.create({
     lineHeight: PAYLOAD_LABEL_LINE_HEIGHT,
     textAlign: 'center',
   },
-  payloadLabelBlock: {
-    height: PAYLOAD_LABEL_BLOCK_HEIGHT,
-    justifyContent: 'flex-end',
-  },
-  // The fields row's own label placement: BELOW its box (2026-08-26 request), the mirror image of
-  // `payloadLabelBlock` above (which sits ABOVE its box, for the given-value row) -- `flex-start`
-  // rather than `flex-end` is the only difference, so a wrapped two-line label still starts
-  // immediately under the box instead of floating away from it.
+  // Label placement for EVERY column in the values row, given values and entry boxes alike: BELOW
+  // its box (2026-08-26 request, extended to the given values on 2026-10-10 when the two rows were
+  // merged into one -- see the note at the JSX). `flex-start` keeps a wrapped two-line label
+  // starting immediately under the box instead of floating away from it, and the fixed
+  // `PAYLOAD_LABEL_BLOCK_HEIGHT` is what keeps every box in the row at the same height whether its
+  // label wraps or not.
+  //
+  // There was a second, mirrored `payloadLabelBlock` here that put the given value's label ABOVE
+  // its box. It went when the rows merged: mixed placement within one row would sit the boxes at
+  // different heights, which is exactly what a decomposition must not do.
   payloadLabelBlockBelow: {
     height: PAYLOAD_LABEL_BLOCK_HEIGHT,
     justifyContent: 'flex-start',
-  },
-  payloadRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: TOKEN_SPACING,
-    justifyContent: 'center',
-    rowGap: TOKEN_SPACING * 1.5,
   },
   // C-EG-02 only: centers ArrayGrid in place of the (otherwise-empty) payload-token row.
   gridWrapper: {
@@ -387,6 +401,7 @@ const styles = StyleSheet.create({
   },
   // Groups the prompt and the GIVEN value(s) alone, at half the container's own gap (2026-08-26
   // request), separate from the entry-fields row below -- see the header's "TWO ROWS" note.
+  // Plain again: the card moved out to `promptAndFieldsGroup` so the entry boxes are inside it.
   promptBlock: {
     gap: spacing.lg / 2,
   },

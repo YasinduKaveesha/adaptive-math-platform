@@ -60,13 +60,13 @@ test('C-MCL-04: intervalMax ramps 10 -> 200 across L1-L5, measured directly from
 // --- the discoverability hint: a 5-wide bucketed range containing targetPosition, never the exact
 // value on its own -----------------------------------------------------------------------------
 
-test('C-MCL-04 L5 (target_position 34): targetRangeStart/targetRangeEnd bucket to 30-35 (multiples of 5, "0-5, 5-10, 10-15" style, per the owner-approved correction)', () => {
+test('C-MCL-04 L5 (target_position 34): buckets to 30-40 (multiples of 10, "0-10, 10-20, 20-30" style)', () => {
   const entry = MCL04_ENTRIES[4]!;
   assert.equal(entry.difficulty_level, 5);
   const spec = resolveLinePositionSpec(makeTask(entry));
   assert.notEqual(spec, null);
   assert.equal(spec!.targetRangeStart, 30);
-  assert.equal(spec!.targetRangeEnd, 35);
+  assert.equal(spec!.targetRangeEnd, 40);
 });
 
 test('the range always contains targetPosition, at every difficulty level', () => {
@@ -78,32 +78,93 @@ test('the range always contains targetPosition, at every difficulty level', () =
   }
 });
 
-test('the range is always exactly 5 wide (targetRangeEnd - targetRangeStart === 5) when not clamped by intervalMax', () => {
+test('the range is always exactly 10 wide, including at the far end', () => {
+  // The `if` this used to carry -- "when not clamped by intervalMax" -- skipped precisely the case
+  // that was broken: a target on the last bucket boundary produced a ZERO-wide window and the hint
+  // read "between 10 and 10", i.e. the answer. The window now slides instead of shrinking, so
+  // there is no case left to skip.
   for (const entry of MCL04_ENTRIES) {
     const spec = resolveLinePositionSpec(makeTask(entry));
     assert.notEqual(spec, null);
-    if (spec!.targetRangeStart + 5 <= spec!.intervalMax) {
-      assert.equal(spec!.targetRangeEnd - spec!.targetRangeStart, 5, `level ${entry.difficulty_level}`);
+    assert.equal(spec!.targetRangeEnd - spec!.targetRangeStart, 10, `level ${entry.difficulty_level}`);
+  }
+});
+
+test('the hint never states the target outright, at any position on any line', () => {
+  // THE LEAK THIS GUARDS. A zero-width window prints the exact answer as a numeral, which is the
+  // one thing this archetype refuses to do. Swept across every position of several line lengths
+  // rather than spot-checked, because the old bug only appeared at one position per line.
+  for (const intervalMax of [3, 7, 10, 17, 20, 50, 200]) {
+    for (let targetPosition = 0; targetPosition <= intervalMax; targetPosition += 1) {
+      const task = makeTask(MCL04_ENTRIES[0]!);
+      task.prompt_payload = { interval_max: intervalMax, target_position: targetPosition };
+      const spec = resolveLinePositionSpec(task);
+      assert.notEqual(spec, null, `${intervalMax}/${targetPosition}`);
+      const where = `intervalMax ${intervalMax}, target ${targetPosition}`;
+      // Never collapsed, so never the answer.
+      assert.ok(spec!.targetRangeEnd > spec!.targetRangeStart, `${where}: zero-width window`);
+      // Always actually contains the target -- a window that slid too far would be worse than a
+      // narrow one, because it would send the child looking in the wrong place.
+      assert.ok(spec!.targetRangeStart <= targetPosition, `${where}: target below window`);
+      assert.ok(targetPosition <= spec!.targetRangeEnd, `${where}: target above window`);
+      // Never wider than the line, and never past its end.
+      assert.ok(spec!.targetRangeStart >= 0, `${where}: window starts below 0`);
+      assert.ok(spec!.targetRangeEnd <= intervalMax, `${where}: window ends past the line`);
     }
   }
 });
 
-test("the range clamps at the line's own far end rather than extending past intervalMax", () => {
+test("the window slides back at the line's far end rather than extending past intervalMax", () => {
   const task = makeTask(MCL04_ENTRIES[0]!);
-  task.prompt_payload = { interval_max: 10, target_position: 9 };
+  task.prompt_payload = { interval_max: 20, target_position: 19 };
   const spec = resolveLinePositionSpec(task);
   assert.notEqual(spec, null);
-  assert.equal(spec!.targetRangeStart, 5);
-  assert.equal(spec!.targetRangeEnd, 10); // would be 15, clamped to intervalMax (10)
+  assert.equal(spec!.targetRangeStart, 10);
+  assert.equal(spec!.targetRangeEnd, 20); // never 30: the line ends at 20.
 });
 
-test('target_position exactly 0 buckets to range 0-5', () => {
+test('a target sitting exactly on the last bucket boundary still gets a real range', () => {
+  // The reported case: "Target is between 10 and 10". The bucket starting at the target cannot
+  // fit, so the window slides down -- still a full bucket wide, still containing the target.
   const task = makeTask(MCL04_ENTRIES[0]!);
-  task.prompt_payload = { interval_max: 10, target_position: 0 };
+  task.prompt_payload = { interval_max: 20, target_position: 20 };
+  const spec = resolveLinePositionSpec(task);
+  assert.notEqual(spec, null);
+  assert.equal(spec!.targetRangeStart, 10);
+  assert.equal(spec!.targetRangeEnd, 20);
+});
+
+test('a line shorter than one bucket gives the whole line, which is the narrowest honest answer', () => {
+  const task = makeTask(MCL04_ENTRIES[0]!);
+  task.prompt_payload = { interval_max: 3, target_position: 3 };
   const spec = resolveLinePositionSpec(task);
   assert.notEqual(spec, null);
   assert.equal(spec!.targetRangeStart, 0);
-  assert.equal(spec!.targetRangeEnd, 5);
+  assert.equal(spec!.targetRangeEnd, 3);
+  assert.ok(spec!.targetRangeEnd > spec!.targetRangeStart);
+});
+
+test('target_position exactly 0 buckets to range 0-10', () => {
+  const task = makeTask(MCL04_ENTRIES[0]!);
+  task.prompt_payload = { interval_max: 20, target_position: 0 };
+  const spec = resolveLinePositionSpec(task);
+  assert.notEqual(spec, null);
+  assert.equal(spec!.targetRangeStart, 0);
+  assert.equal(spec!.targetRangeEnd, 10);
+});
+
+test('a ten-unit line is exactly one bucket, so the hint names the whole line', () => {
+  // Stated rather than hidden: at L1 the hint stops narrowing anything. That is acceptable because
+  // a 10-unit line is fully visible without scrolling -- this hint exists for the 200-unit line at
+  // L5, where the target starts off-screen. It is still honest, and still never the exact target.
+  for (const targetPosition of [0, 3, 7, 10]) {
+    const task = makeTask(MCL04_ENTRIES[0]!);
+    task.prompt_payload = { interval_max: 10, target_position: targetPosition };
+    const spec = resolveLinePositionSpec(task);
+    assert.notEqual(spec, null);
+    assert.equal(spec!.targetRangeStart, 0, `target ${targetPosition}`);
+    assert.equal(spec!.targetRangeEnd, 10, `target ${targetPosition}`);
+  }
 });
 
 // --- fail-closed negative controls, each derived from a real, resolving exemplar ------------------

@@ -64,6 +64,17 @@ class ConflictError(ApplicationError):
     message = "The request conflicts with the current resource state."
 
 
+class ClassroomNameMismatchError(ApplicationError):
+    """A classroom deletion whose typed confirmation did not match the classroom's name.
+
+    The name is the teacher's last deliberate check before a classroom closes, so a mismatch
+    is refused on the server too -- a client that skipped the check still cannot delete."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "CLASSROOM_NAME_MISMATCH"
+    message = "The confirmation does not match the classroom name."
+
+
 class TechnicalFailureError(ApplicationError):
     """A network/database/API failure while handling the request. Never a learner-facing
     correctness/BKT outcome — see ``app.application.attempt_submission``."""

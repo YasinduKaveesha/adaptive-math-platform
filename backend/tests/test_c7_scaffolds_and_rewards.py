@@ -305,6 +305,7 @@ async def _seed_session_and_instance(
             policy_parameter_source_status="TEST_FIXTURE_ONLY",
             scaffold_parameter_source_status="TEST_FIXTURE_ONLY",
             aggregation_parameter_source_status="TEST_FIXTURE_ONLY",
+            q_policy_parameter_source_status="TEST_FIXTURE_ONLY",   # LIVE-01: new gated family
             smoke_mode=True,
             request_id=f"req-{uuid4()}",
         )

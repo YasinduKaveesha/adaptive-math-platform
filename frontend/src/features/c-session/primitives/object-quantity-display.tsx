@@ -58,7 +58,9 @@
 import { StyleSheet, View } from 'react-native';
 
 import { OBJECT_TOKEN_SIZE, OBJECT_TOKEN_SPACING } from '@/src/features/c-session/motor-constants';
-import { colors, radius } from '@/src/theme/tokens';
+import { AppText } from '@/src/components/app-text';
+import { pickCountableEmoji } from '@/src/utils/countable-emoji';
+
 
 // See the header's own "DEFENSE IN DEPTH" note -- kept numerically equal to, but independent of,
 // option-select-logic.ts's MAX_QUANTITY.
@@ -71,6 +73,10 @@ export type ObjectQuantityDisplayProps = {
 };
 
 export function ObjectQuantityDisplay({ count }: ObjectQuantityDisplayProps) {
+  // Seeded from the quantity itself -- this display has no id of its own, and `count` is the only
+  // stable thing it receives. Stable across re-renders, which is what matters; two questions that
+  // happen to show the same quantity will show the same fruit, which is harmless.
+  const emoji = pickCountableEmoji(`quantity-${count}`);
   const renderCount = Math.max(0, Math.min(count, RENDER_CAP));
 
   return (
@@ -80,20 +86,25 @@ export function ObjectQuantityDisplay({ count }: ObjectQuantityDisplayProps) {
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
           key={index}
-          style={styles.object}
-        />
+          style={styles.object}>
+          {/* The emoji IS the object -- no disc behind it (owner request, 2026-10-18). The box
+              keeps its size so the row's layout and the quantity-blind labelling above are both
+              untouched. */}
+          <AppText style={styles.glyphText}>{emoji}</AppText>
+        </View>
       ))}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  glyphText: { fontSize: Math.round(OBJECT_TOKEN_SIZE * 0.72), lineHeight: Math.round(OBJECT_TOKEN_SIZE * 0.9) },
+  // Sized box, no disc: it reserves the same space the filled circle did so the row wraps
+  // identically, but draws nothing of its own.
   object: {
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.border,
-    borderRadius: radius.pill,
-    borderWidth: 2,
+    alignItems: 'center',
     height: OBJECT_TOKEN_SIZE,
+    justifyContent: 'center',
     width: OBJECT_TOKEN_SIZE,
   },
   row: {

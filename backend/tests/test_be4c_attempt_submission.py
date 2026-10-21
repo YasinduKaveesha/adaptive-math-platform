@@ -145,11 +145,23 @@ async def _seed_learner_session_and_skill_state(session: AsyncSession) -> tuple[
 
 
 async def _open_opportunity(
-    session: AsyncSession, *, session_id: UUID, learner_id: UUID, timeout: timedelta = timedelta(minutes=5)
+    session: AsyncSession,
+    *,
+    session_id: UUID,
+    learner_id: UUID,
+    timeout: timedelta = timedelta(minutes=5),
+    presented: bool = True,
 ) -> UUID:
     """Directly persists one OPEN opportunity + task instance with a known correct_answer
     ("7"), mirroring test_be4a_opportunity_persistence.py rather than exercising BE4b's
-    full adaptive-selection pipeline."""
+    full adaptive-selection pipeline.
+
+    ``presented`` defaults to True because that is the ordinary state of a question a child is
+    answering: the screen acknowledged presentation and the deadline was anchored to it. A timeout
+    MEANS "was shown the question and did not answer in time", so a fixture that never marked
+    presentation was not modelling a timeout at all -- it was modelling the failed-acknowledgement
+    anomaly, which since 2026-10-10 is deliberately not treated as a timeout (see
+    ``attempt_submission.py``'s own note). Pass ``presented=False`` to exercise THAT case."""
     persistence = OpportunityPersistenceService(session)
     opportunity = await persistence.open_opportunity(
         session_id=session_id,
@@ -181,6 +193,12 @@ async def _open_opportunity(
         catalogue_checksum="b" * 64,
         provenance=provenance("b_task_instance", uuid4()),
     )
+    if presented:
+        # Anchored to the SAME instant the deadline was computed from, so a `timeout=0` fixture is
+        # still immediately past its deadline and a five-minute one still has five minutes. This
+        # marks the question as shown without moving the clock the fixture asked for.
+        opportunity.presented_at_utc = opportunity.timeout_deadline_utc - timeout
+        await session.flush()
     return opportunity.item_opportunity_id
 
 
@@ -508,6 +526,79 @@ def test_expired_deadline_records_timeout_and_creates_no_bkt_observation() -> No
             )
             assert attempt.submitted_value == "7"
             assert attempt.event_kind == "TIMEOUT"
+
+        await database_engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_an_unacknowledged_opportunity_is_never_judged_late() -> None:
+    """OWNER REPORT, 2026-10-10: a child opened a Number Sense question, answered in about one
+    second, and was shown "Time's up".
+
+    The cause, from the live row: `presented_at_utc = NULL` -- no presentation acknowledgement ever
+    landed -- so the deadline still in force was the FAIL-SAFE written at SELECTION. Home warms
+    Component B on mount, so the opportunity had been minted minutes before the child entered, and
+    on a degraded network all four acknowledgement attempts failed. The child was therefore judged
+    against a clock that had been measuring prefetch and network time, on a question the system has
+    no record of ever having shown them.
+
+    This fixture is that exact shape: a long-expired deadline AND no acknowledgement. It must grade
+    normally. `component-b-closure-decisions.json`'s timeout-policy ruling -- "infrastructure
+    failure is never learner failure" -- is the authority, and `anchor_presentation` already quotes
+    it for the sibling case.
+
+    The negative control is the test above: an expired deadline WITH a confirmed presentation is
+    still a TIMEOUT. Together they pin the distinction rather than just the new behaviour."""
+    alembic("upgrade", "head")
+
+    async def exercise() -> None:
+        database_engine, factory = isolated_database()
+        async with factory() as session:
+            session_id, learner_id, _bundle_id, subject = await _seed_learner_session_and_skill_state(session)
+            item_opportunity_id = await _open_opportunity(
+                session,
+                session_id=session_id,
+                learner_id=learner_id,
+                timeout=timedelta(seconds=0),
+                presented=False,
+            )
+            await session.commit()
+
+        await asyncio.sleep(0.05)  # the deadline is now comfortably in the past
+
+        service = AttemptSubmissionService(uow_factory=partial(SqlAlchemyUnitOfWork, factory=factory))
+        response = await _submit(
+            service, subject=subject, session_id=session_id, item_opportunity_id=item_opportunity_id, submitted_value="7"
+        )
+        assert response.event_kind == "RESPONSE", "a question never shown cannot have been answered late"
+        assert response.response_matched is True, "and a correct answer must actually be graded"
+
+        async with factory() as session:
+            attempt = await session.scalar(
+                select(AttemptRecord).where(AttemptRecord.item_opportunity_id == item_opportunity_id)
+            )
+            assert attempt.event_kind == "RESPONSE"
+            assert attempt.submitted_value == "7"
+
+            # The null acknowledgement is LEFT null: it is the audit trail of why this submission
+            # was not treated as late. Nothing here invents a presentation time.
+            opportunity = await session.scalar(
+                select(ItemOpportunityRecord).where(
+                    ItemOpportunityRecord.item_opportunity_id == item_opportunity_id
+                )
+            )
+            assert opportunity.presented_at_utc is None
+
+            # GATE B CONSEQUENCE, asserted rather than described: this attempt now observes, where
+            # as a TIMEOUT it would have contributed nothing. If the owner rules the other way,
+            # this is the assertion that has to change.
+            skill_state = await session.scalar(
+                select(LearnerSkillStateRecord).where(
+                    LearnerSkillStateRecord.learner_id == learner_id, LearnerSkillStateRecord.skill_id == SKILL_ID
+                )
+            )
+            assert skill_state.observation_count == 1
 
         await database_engine.dispose()
 

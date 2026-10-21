@@ -17,6 +17,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Mapping
 
 from app.domain.b_session import StrictModel
+from app.domain.live_engine.locales import DEFAULT_LOCALE, Locale
+from app.domain.live_engine.prompt_instructions import INSTRUCTION_PROMPT_KEY, instruction_for
+from app.domain.live_engine.prompt_wording import simplified_stem_for
 
 
 if TYPE_CHECKING:
@@ -80,11 +83,42 @@ class PresentedOpportunity:
         }
 
 
+def _child_facing_prompt(task_instance: "TaskInstanceRecord", locale: Locale = DEFAULT_LOCALE) -> dict:
+    """The stored prompt payload, rewritten for the child who has to read it.
+
+    Two authored layers, both Upadya's and both applied here rather than in the vendored generator
+    (see ``prompt_wording`` and ``prompt_instructions`` for why):
+
+    * ``stem`` is replaced by simpler English for the templates whose stem is prose. The stored row
+      keeps the generator's original, so the research record is untouched and nothing is retroactive.
+    * ``instruction`` is ADDED for the templates whose stem is the material to work on (a sequence,
+      a comparison) and therefore says nothing about the task.
+
+    A template with neither is left exactly as generated, which is the correct default: the bare
+    arithmetic items read the same in any language and are better off untouched.
+
+    Neither layer overwrites something the generator already supplied -- if the wheel ever starts
+    emitting its own ``instruction``, that one wins and this becomes a no-op.
+    """
+    prompt = dict(task_instance.prompt)
+
+    simplified = simplified_stem_for(task_instance.item_template_id, prompt, locale)
+    if simplified is not None:
+        prompt["stem"] = simplified
+
+    if INSTRUCTION_PROMPT_KEY not in prompt:
+        instruction = instruction_for(task_instance.item_template_id, locale)
+        if instruction is not None:
+            prompt[INSTRUCTION_PROMPT_KEY] = instruction
+    return prompt
+
+
 def project_task_instance_to_presentation(
     task_instance: "TaskInstanceRecord",
     *,
     presentation_token: str,
     server_timeout_deadline_utc: datetime,
+    locale: Locale = DEFAULT_LOCALE,
 ) -> PresentedOpportunity:
     """Build the safe DTO from an explicit allow-list of ``TaskInstanceRecord`` columns.
 
@@ -93,6 +127,10 @@ def project_task_instance_to_presentation(
     ``distractor_rule_ids``, ``generated_operands``, ``generation_seed``, ``catalogue_version``,
     ``catalogue_checksum``, ``applied_guard_ids``) are structurally unreachable from the return
     value.
+
+    ``item_template_id`` is read but NOT projected: it is used only to look up Upadya's authored
+    child-facing wording (``prompt_wording``, ``prompt_instructions``), and stays off the wire like
+    every other private column.
     """
     return PresentedOpportunity(
         item_opportunity_id=str(task_instance.item_opportunity_id),
@@ -102,7 +140,7 @@ def project_task_instance_to_presentation(
         difficulty_level=task_instance.difficulty_level,
         representation_type=task_instance.representation_type,
         response_format=task_instance.response_format,
-        prompt=dict(task_instance.prompt),
+        prompt=_child_facing_prompt(task_instance, locale),
         presented_choices=tuple(task_instance.presented_choices),
         presentation_token=presentation_token,
         server_timeout_deadline_utc=server_timeout_deadline_utc,

@@ -55,6 +55,9 @@ EXPECTED_TABLES = {
     # Component C backend remediation, batch 4 (Amendment A-1) — the durable exclusion-reason /
     # supersession-chain table, created by its own migration (20260816_0007), not BE2's 0002.
     "c_task_opportunity_verdicts",
+    # Component D (Component D authorization, owner decision D-011 A1, 2026-10-21) — the three
+    # cognitive-profiling tables, created by their own migration (20261021_0010), not BE2's 0002.
+    "d_learner_state", "d_interactions", "d_cognitive_profiles",
     # Component C batch 9c-1a (Master Build Plan v3.0 §11 Phase 9; 9b_9c plan Track 9c, "9c-1 —
     # the tables and the routing") — the two shared B/C outbox tables, deliberately unprefixed
     # (shared infrastructure, not shared ownership — owner condition 1), created by their own
@@ -79,6 +82,9 @@ BE2_BASE_TABLES = EXPECTED_TABLES - {
     "c_task_opportunity_verdicts",
     # Component C batch 9c-1a — created by its own migration (20260816_0008), not BE2's 0002.
     "outbox_events", "contract_deliveries",
+    # Component D (Component D authorization, D-011 A1) — created by their own migration
+    # (20261021_0010), not BE2's 0002.
+    "d_learner_state", "d_interactions", "d_cognitive_profiles",
 }
 PROHIBITED_COLUMN_TERMS = {
     "mastery", "bkt", "guess_guard", "certif", "sequenc", "hint", "answer",
@@ -145,6 +151,8 @@ EXPECTED_ROUTES = {
     ("/api/v1/learner/profile", ("GET", "POST")),
     ("/api/v1/classrooms", ("GET", "POST")),
     ("/api/v1/classrooms/{classroom_id}", ("GET",)),
+    # 2026-09-14 -- teacher-initiated classroom soft delete (migration 20260914_0009).
+    ("/api/v1/classrooms/{classroom_id}/delete", ("POST",)),
     ("/api/v1/classrooms/{classroom_id}/invites", ("POST",)),
     ("/api/v1/classroom-invites/{classroom_invite_id}/revoke", ("POST",)),
     ("/api/v1/classroom-invites/resolve", ("POST",)),
@@ -160,6 +168,9 @@ EXPECTED_ROUTES = {
     ("/api/v1/b/sessions/{session_id}/abandon", ("POST",)),
     # BE4b (BEplan §9 BE4.2) — the one authorized adaptive-selection route.
     ("/api/v1/b/sessions/{session_id}/opportunities", ("POST",)),
+    # 2026-09-27 — the learner-presentation acknowledgement that anchors the answering clock at
+    # the render rather than at selection (owner ruling; app/domain/b_presentation_ack.py).
+    ("/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/presented", ("POST",)),
     # BE4c (BEplan §9 BE4.3 + BE4.4) — the one authorized attempt-submission route.
     ("/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/responses", ("POST",)),
     # BE4d (BEplan §9 BE4.5) — the one authorized governed-hint-request route.
@@ -167,6 +178,9 @@ EXPECTED_ROUTES = {
     # BE4e (BEplan §9 BE4.6) — the two authorized next-or-complete / SAFE-standing routes.
     ("/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/complete", ("POST",)),
     ("/api/v1/b/sessions/{session_id}/summary", ("GET",)),
+    # 2026-09-21 -- the learner's own per-skill BKT state, read-only, for the Play prep card
+    # (product-owner ruling; app/domain/b_skill_state.py).
+    ("/api/v1/b/learner/skill-states", ("GET",)),
     # Phase 4b — the four authorized Component C session-lifecycle routes (create/start, resume,
     # abandon, complete). See AUTHORIZED_C_SESSION_LIFECYCLE_OPERATIONS below.
     ("/api/v1/c/sessions", ("POST",)),
@@ -176,6 +190,14 @@ EXPECTED_ROUTES = {
     # Phase 5 -- the two task-serving routes. See AUTHORIZED_C_TASK_SERVING_OPERATIONS below.
     ("/api/v1/c/sessions/{c_session_id}/tasks/next", ("POST",)),
     ("/api/v1/c/sessions/{c_session_id}/tasks/{c_task_instance_id}/actions", ("POST",)),
+    # Component D (Component D authorization, owner decision D-011 A2, 2026-10-21) -- the six
+    # authorized student-side cognitive-profiling routes. The two carrying "session" are
+    # additionally carved out of the path-term prohibition by A3; see
+    # AUTHORIZED_D_PROFILING_OPERATIONS below.
+    ("/api/v1/d/learner/state", ("GET", "POST")),
+    ("/api/v1/d/learner/profiles", ("GET",)),
+    ("/api/v1/d/learner/profiles/latest", ("GET",)),
+    ("/api/v1/d/sessions/{session_id}/profile", ("GET", "POST")),
 }
 AUTHORIZED_INVITE_MEMBERSHIP_OPERATIONS = {
     ("/api/v1/classrooms/{classroom_id}/invites", ("POST",)),
@@ -196,6 +218,9 @@ AUTHORIZED_B_SESSION_LIFECYCLE_OPERATIONS = {
 }
 AUTHORIZED_B_OPPORTUNITY_SELECTION_OPERATIONS = {
     ("/api/v1/b/sessions/{session_id}/opportunities", ("POST",)),
+}
+AUTHORIZED_B_PRESENTATION_ACK_OPERATIONS = {
+    ("/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/presented", ("POST",)),
 }
 AUTHORIZED_B_ATTEMPT_SUBMISSION_OPERATIONS = {
     ("/api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/responses", ("POST",)),
@@ -220,6 +245,14 @@ AUTHORIZED_C_SESSION_LIFECYCLE_OPERATIONS = {
 AUTHORIZED_C_TASK_SERVING_OPERATIONS = {
     ("/api/v1/c/sessions/{c_session_id}/tasks/next", ("POST",)),
     ("/api/v1/c/sessions/{c_session_id}/tasks/{c_task_instance_id}/actions", ("POST",)),
+}
+# Component D (Component D authorization, owner decision D-011 A3, 2026-10-21): the "session" path
+# term is carved out for the TWO profile routes only, on the same pattern B's and C's lifecycle
+# routes already use. Component D's other four routes are learner-scoped and carry no prohibited
+# term at all, so they are deliberately NOT in this set -- a carve-out that covered them would
+# grant more than was asked for. Every other prohibited term still applies to these two paths.
+AUTHORIZED_D_PROFILING_OPERATIONS = {
+    ("/api/v1/d/sessions/{session_id}/profile", ("GET", "POST")),
 }
 PROHIBITED_SCIENTIFIC_PATH_TERMS = (
     "session", "attempt", "hint", "progress", "bkt", "mastery", "sequenc", "certif", "guess",
@@ -269,11 +302,14 @@ def test_no_session_question_answer_or_scientific_route_exists() -> None:
         if (
             route in AUTHORIZED_B_SESSION_LIFECYCLE_OPERATIONS
             or route in AUTHORIZED_B_OPPORTUNITY_SELECTION_OPERATIONS
+            or route in AUTHORIZED_B_PRESENTATION_ACK_OPERATIONS
             or route in AUTHORIZED_B_ATTEMPT_SUBMISSION_OPERATIONS
             or route in AUTHORIZED_B_HINT_REQUEST_OPERATIONS
             or route in AUTHORIZED_B_SESSION_COMPLETION_OPERATIONS
             or route in AUTHORIZED_C_SESSION_LIFECYCLE_OPERATIONS
             or route in AUTHORIZED_C_TASK_SERVING_OPERATIONS
+            # D-011 A3.
+            or route in AUTHORIZED_D_PROFILING_OPERATIONS
         ):
             terms = tuple(term for term in terms if term != "session")
         assert not any(term in lowered for term in terms), path
@@ -284,6 +320,14 @@ def test_openapi_contains_exactly_the_two_authorized_b_session_completion_operat
     assert AUTHORIZED_B_SESSION_COMPLETION_OPERATIONS <= _current_routes()
     non_completion_routes = {route for route in EXPECTED_ROUTES if route not in AUTHORIZED_B_SESSION_COMPLETION_OPERATIONS}
     assert _current_routes() - AUTHORIZED_B_SESSION_COMPLETION_OPERATIONS == non_completion_routes
+
+
+def test_openapi_contains_exactly_the_one_authorized_b_presentation_ack_operation() -> None:
+    """The clock-anchoring route is one route, and adding a second would fail here first."""
+    assert len(AUTHORIZED_B_PRESENTATION_ACK_OPERATIONS) == 1
+    assert AUTHORIZED_B_PRESENTATION_ACK_OPERATIONS <= _current_routes()
+    non_ack_routes = {route for route in EXPECTED_ROUTES if route not in AUTHORIZED_B_PRESENTATION_ACK_OPERATIONS}
+    assert _current_routes() - AUTHORIZED_B_PRESENTATION_ACK_OPERATIONS == non_ack_routes
 
 
 def test_openapi_contains_exactly_the_one_authorized_b_attempt_submission_operation() -> None:

@@ -185,6 +185,7 @@ async def _create_bundle_and_session(
     policy_status: str = "TEST_FIXTURE_ONLY",
     scaffold_status: str = "TEST_FIXTURE_ONLY",
     aggregation_status: str = "TEST_FIXTURE_ONLY",
+    q_policy_status: str = "TEST_FIXTURE_ONLY",   # LIVE-01: new gated family
     smoke_mode: bool = True,
     session_creation_spy: list | None,
 ):
@@ -203,6 +204,7 @@ async def _create_bundle_and_session(
         policy_parameter_source_status=policy_status,
         scaffold_parameter_source_status=scaffold_status,
         aggregation_parameter_source_status=aggregation_status,
+        q_policy_parameter_source_status=q_policy_status,
         smoke_mode=smoke_mode,
         request_id=f"req-{uuid4()}",
         session_creation_spy=session_creation_spy,

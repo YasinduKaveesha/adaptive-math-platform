@@ -29,12 +29,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from app.domain.live_engine_c.errors import PromptWordingUnavailableError
-from app.domain.live_engine_c.prompt_wording import prompt_text_for
+from app.domain.live_engine_c.prompt_wording import PROMPT_TEXT_BY_TEMPLATE, prompt_text_for
 from scripts.generate_c_prompt_wording import _serialize_wording, build_wording
 
 CONTRACT_DIR = Path(__file__).parent.parent / "contract"
@@ -235,29 +236,96 @@ def test_c_cc_04_names_both_trial_types_neutrally_and_names_neither_as_correct()
         assert banned not in text_lower, entry["prompt_text"]
 
 
+def _variant_text(template_id: str, variant_value: str) -> str:
+    """The authored string for one variant, read from the table itself.
+
+    These two tests are about the RESOLVER -- that it reads the variant key out of the payload,
+    and that it ignores the payload for a template with no variants. Asserting against literal
+    wording made them fail whenever the wording was edited (the 2026-09-28 ESL rewrite), which is
+    a content review pretending to be a mechanism test. The content has its own guards: coverage,
+    banned terms, length, no digits, and the frozen artefact's checksum.
+    """
+    for variant in PROMPT_TEXT_BY_TEMPLATE[template_id]:
+        if variant.variant_value == variant_value:
+            return variant.prompt_text
+    raise AssertionError(f"no {variant_value!r} variant for {template_id}")
+
+
 def test_prompt_text_for_resolves_variant_from_payload() -> None:
     """ACCEPTANCE CRITERION 1: the resolver takes a payload and resolves variants from it,
     server-side."""
-    assert prompt_text_for("C-EG-02", {"direction": "build"}) == "Build the array shown."
-    assert (
-        prompt_text_for("C-EG-02", {"direction": "read"})
-        == "Tell how many rows, columns, and squares the array has."
-    )
-    assert (
-        prompt_text_for("C-NP-04", {"direction": "ascending"})
-        == "Put the numbers in order, from smallest to largest."
-    )
-    assert (
-        prompt_text_for("C-NP-04", {"direction": "descending"})
-        == "Put the numbers in order, from largest to smallest."
-    )
+    for template_id, values in (("C-EG-02", ("build", "read")), ("C-NP-04", ("ascending", "descending"))):
+        resolved = {
+            value: prompt_text_for(template_id, {"direction": value}) for value in values
+        }
+        for value in values:
+            assert resolved[value] == _variant_text(template_id, value)
+        # The variants must actually differ, or "resolution" would be indistinguishable from
+        # returning the same string twice.
+        assert len(set(resolved.values())) == len(values), resolved
 
 
 def test_prompt_text_for_ignores_payload_for_non_variant_template() -> None:
-    assert prompt_text_for("C-BT-01", {}) == "Show this number using tens and ones."
-    assert prompt_text_for("C-BT-01", {"anything": "irrelevant"}) == (
-        "Show this number using tens and ones."
-    )
+    only = PROMPT_TEXT_BY_TEMPLATE["C-BT-01"]
+    assert len(only) == 1
+    expected = only[0].prompt_text
+    assert prompt_text_for("C-BT-01", {}) == expected
+    assert prompt_text_for("C-BT-01", {"anything": "irrelevant"}) == expected
+    assert prompt_text_for("C-BT-01", {"direction": "build"}) == expected
+
+
+# --- ESL register (2026-09-28) ------------------------------------------------------------------
+#
+# BANNED_TECHNICAL_TERMS above keeps SYSTEM vocabulary off a child's screen. This is a different
+# axis: school-register English that a Grade 2 reader whose first language is Sinhala should not
+# have to decode before the mathematics starts. Mirrors the list Component B's wording is held to
+# (app/domain/live_engine/prompt_wording.py), so the two components cannot drift into two different
+# registers for the same learner.
+#
+# Real maths vocabulary a Grade 2 class is taught -- "tens", "ones", "hundreds", "groups", "rows",
+# "equally", "half" -- is deliberately NOT here. Removing that would teach the wrong thing rather
+# than simplify.
+ESL_BANNED_WORDS = (
+    "numeral",
+    "quantity",
+    "expanded form",
+    "array",
+    "column",
+    "digit",
+    "select",
+    "exactly",
+    "ascending",
+    "descending",
+    "subtract",
+    "trade",
+)
+
+
+def test_no_wording_uses_school_register_english() -> None:
+    offenders = {
+        entry["game_task_template_id"]: entry["prompt_text"]
+        for entry in _frozen_entries()
+        for word in ESL_BANNED_WORDS
+        if word in entry["prompt_text"].lower()
+    }
+    assert offenders == {}, offenders
+
+
+def test_esl_scan_would_catch_a_regression() -> None:
+    """Negative control, in this file's own idiom: the scan must actually fire on the wording these
+    strings replaced, or it proves nothing."""
+    replaced = "Build the array shown."
+    assert any(word in replaced.lower() for word in ESL_BANNED_WORDS)
+
+
+def test_wording_stays_short_enough_to_read_aloud() -> None:
+    """MAX_WORDING_LENGTH_CHARS is a generous outer bound on the whole string. This is the tighter,
+    per-sentence one Component B is held to: one idea per sentence, few words. It catches a future
+    addition written as prose, not this batch's phrasing."""
+    for entry in _frozen_entries():
+        for sentence in (part for part in re.split(r"[.?]", entry["prompt_text"]) if part.strip()):
+            words = sentence.split()
+            assert len(words) <= 9, (entry["game_task_template_id"], sentence.strip(), len(words))
 
 
 def test_prompt_text_for_raises_on_unknown_template() -> None:

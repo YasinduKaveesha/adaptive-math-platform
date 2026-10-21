@@ -13,11 +13,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { artwork } from '@/src/utils/artwork';
 import { type Gender, useAuth } from '@/src/auth/auth-context';
 import { AppText } from '@/src/components/app-text';
 import { colors, radius, spacing } from '@/src/theme/tokens';
 
-const brandWordmark = require('../../../assets/images/mathmingo-header.png');
+const brandWordmark = artwork.mathmingoHeader;
 
 type AuthMode = 'sign-in' | 'sign-up';
 type SignUpStep = 1 | 2 | 3;

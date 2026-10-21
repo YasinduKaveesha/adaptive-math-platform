@@ -31,7 +31,9 @@ import { HIT_SLOP } from '@/src/features/c-session/motor-constants';
 import { BooleanToggle } from '@/src/features/c-session/primitives/boolean-toggle';
 import { DigitKeypad } from '@/src/features/c-session/primitives/digit-keypad';
 import { ValueTokenRow } from '@/src/features/c-session/primitives/value-token-row';
+import { TaskPromptCard } from '@/src/features/c-session/task-prompt-card';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { TASK_SURFACE_PADDING } from '@/src/features/c-session/task-layout';
 
 export function OrderedValueSequenceSurface({ onSubmit, task }: ArchetypeSurfaceProps) {
   const spec = useMemo(() => resolveOrderedValueSequenceSpec(task), [task]);
@@ -73,9 +75,13 @@ function EntrySceneSurface({ onSubmit, spec }: EntrySceneSurfaceProps) {
 
   return (
     <View style={styles.container}>
-      <AppText style={styles.promptText} variant="title">
-        {spec.promptText}
-      </AppText>
+      {/* The card holds the question alone here: what sits below it is the answer
+          surface itself -- the child drags or taps it -- not something they only look at. */}
+      <TaskPromptCard>
+        <AppText style={styles.promptText} variant="title">
+          {spec.promptText}
+        </AppText>
+      </TaskPromptCard>
       <ValueTokenRow
         blanks={spec.blanks}
         entryValues={entryValues}
@@ -122,9 +128,13 @@ function ArrangeSceneSurface({ onSubmit, spec }: ArrangeSceneSurfaceProps) {
   return (
     <View style={styles.arrangeContainer}>
       <View style={styles.arrangeTopBlock}>
-        <AppText style={styles.promptText} variant="title">
-          {spec.promptText}
-        </AppText>
+        {/* The card holds the question alone here: what sits below it is the answer
+            surface itself -- the child drags or taps it -- not something they only look at. */}
+        <TaskPromptCard>
+          <AppText style={styles.promptText} variant="title">
+            {spec.promptText}
+          </AppText>
+        </TaskPromptCard>
         <View style={styles.arrangeRowWrapper}>
           <ValueTokenRow mode="reorder" onChangeOrder={setOrder} values={order} />
         </View>
@@ -225,7 +235,7 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: spacing.lg,
     justifyContent: 'space-between',
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   // The arrange (NP-04) scene's own layout, scoped apart from `container`/`promptText` above
   // (still used unchanged by the entry scene, NP-01..03) -- 2026-08-26 correction, found by the
@@ -239,7 +249,7 @@ const styles = StyleSheet.create({
   arrangeContainer: {
     flex: 1,
     gap: spacing.lg / 2,
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   // Groups the prompt and the token row at a small, fixed gap, with a small top margin so the
   // prompt sits slightly lower than the very top edge (2026-08-26 request).

@@ -3,6 +3,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { AppText } from '@/src/components/app-text';
 import type { BeforeAfterVisual } from '@/src/features/session/prompt-visuals/types';
+import { labelForCountableEmoji, pickCountableEmoji } from '@/src/utils/countable-emoji';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 
 // B-NS07 conservation — two panels, before and after.
@@ -19,7 +20,7 @@ import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 // Neither panel carries a count, and nothing is labelled "added" or "removed". The child compares the
 // two groups; that comparison is the task.
 
-function Panel({ count, label }: { count: number; label: string }) {
+function Panel({ count, emoji, emojiLabel, label }: { count: number; emoji: string; emojiLabel: string; label: string }) {
   return (
     <View style={styles.panel}>
       <AppText align="center" style={styles.panelLabel}>
@@ -30,13 +31,9 @@ function Panel({ count, label }: { count: number; label: string }) {
           <AppText style={styles.none}>empty</AppText>
         ) : (
           Array.from({ length: count }).map((_unused, index) => (
-            <View
-              accessibilityLabel="Circle"
-              accessibilityRole="image"
-              accessible
-              key={index}
-              style={styles.object}
-            />
+<View accessibilityLabel={emojiLabel} accessibilityRole="image" accessible key={index}>
+              <AppText style={styles.glyph}>{emoji}</AppText>
+            </View>
           ))
         )}
       </View>
@@ -44,12 +41,16 @@ function Panel({ count, label }: { count: number; label: string }) {
   );
 }
 
-export function BeforeAfter({ visual }: { visual: BeforeAfterVisual }) {
+export function BeforeAfter({ seed, visual }: { seed: string; visual: BeforeAfterVisual }) {
+  // The SAME emoji before and after: the change being shown is the COUNT, so the objects must be
+  // the one thing that does not change between the two panels.
+  const emoji = pickCountableEmoji(seed);
+  const emojiLabel = labelForCountableEmoji(emoji);
   return (
-    <View accessibilityLabel="Two groups of circles, before and after" style={styles.row}>
-      <Panel count={visual.before} label="Before" />
+    <View accessibilityLabel="Two groups of objects, before and after" style={styles.row}>
+      <Panel count={visual.before} emoji={emoji} emojiLabel={emojiLabel} label="Before" />
       <Ionicons color={colors.textMuted} name="arrow-forward" size={20} />
-      <Panel count={visual.after} label="After" />
+      <Panel count={visual.after} emoji={emoji} emojiLabel={emojiLabel} label="After" />
     </View>
   );
 }
@@ -57,15 +58,8 @@ export function BeforeAfter({ visual }: { visual: BeforeAfterVisual }) {
 const OBJECT_SIZE = 18;
 
 const styles = StyleSheet.create({
+  glyph: { fontSize: OBJECT_SIZE, lineHeight: Math.round(OBJECT_SIZE * 1.25) },
   none: { color: colors.textMuted, fontSize: typography.fontSize.xs },
-  object: {
-    backgroundColor: colors.accentBlue,
-    borderColor: colors.surface1,
-    borderRadius: OBJECT_SIZE / 2,
-    borderWidth: 1,
-    height: OBJECT_SIZE,
-    width: OBJECT_SIZE,
-  },
   panel: {
     // Both panels are identical in size and styling so that only the number of objects can differ —
     // a panel that looked different for any other reason would be a cue about the answer.

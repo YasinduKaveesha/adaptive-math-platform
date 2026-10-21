@@ -34,7 +34,15 @@
           "backgroundColor": "#f4f4f6"
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-asset",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

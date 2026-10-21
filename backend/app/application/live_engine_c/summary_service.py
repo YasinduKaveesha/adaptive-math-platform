@@ -38,6 +38,7 @@ call rather than folded silently into R-8's authority.
 
 from __future__ import annotations
 
+from typing import Optional, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -199,8 +200,13 @@ async def derive_and_persist_summary(
     stu_session_id: str,
     game_task_instance_id: str,
     request_id: str,
+    records: Optional[Sequence[CGameplayEventRecord]] = None,
 ) -> CTaskOpportunitySummaryRecord:
-    """T6-a/T6-c: called ONLY after a terminal event write has succeeded (the caller's
+    """PERF-01: ``records`` -- when the caller (``submit_action``) already holds this instance's complete, event_index-ordered
+    stream in this transaction (it read the stream under the instance row lock and added its own events itself), it is passed
+    in and the re-read below is skipped. Omitted -> unchanged behaviour.
+
+    T6-a/T6-c: called ONLY after a terminal event write has succeeded (the caller's
     responsibility, not checked here) -- reads the full ordered event stream for the instance,
     translates it, derives THROUGH THE ADAPTER, and persists the result verbatim (T6-d).
 
@@ -219,7 +225,8 @@ async def derive_and_persist_summary(
     identical exception it always did (proven by ``tests/test_batch4_verdict_supersession.py``'s
     own write-path regression: the existing contract is not weakened, only observed)."""
     event_repo = CGameplayEventRecordRepository(session)
-    records = await event_repo.list_ordered_for_instance(c_task_instance_id)
+    if records is None:
+        records = await event_repo.list_ordered_for_instance(c_task_instance_id)
     try:
         validate_clock_discipline(records)
         domain_events = [

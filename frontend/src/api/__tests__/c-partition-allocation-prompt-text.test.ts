@@ -44,9 +44,14 @@ test('every C-EG-01 and C-SF-01 exemplar\'s prompt_text survives resolution unch
   }
 });
 
-test('C-EG-01\'s own prompt_text is exactly "Build the groups shown, with the same number in each group."', () => {
+test('C-EG-01\'s carries real authored wording, not a placeholder or an empty string', () => {
   const entry = EXEMPLAR_ENTRIES.find((e) => e.game_task_template_id === 'C-EG-01')!;
-  assert.equal(entry.prompt_text, 'Build the groups shown, with the same number in each group.');
+  // What this is really for is catching a stale or empty generated exemplar, so it checks
+  // that rather than the copy -- which the backend artefact pins, with a checksum.
+  assert.equal(typeof entry.prompt_text, 'string');
+  assert.ok(entry.prompt_text.trim().length > 10, entry.prompt_text);
+  assert.equal(entry.prompt_text.trim(), entry.prompt_text);
+  assert.doesNotMatch(entry.prompt_text, /TODO|PLACEHOLDER/);
 });
 
 test('partition-allocation-logic.ts never builds a substitute prompt string (no template literal touching promptText)', () => {

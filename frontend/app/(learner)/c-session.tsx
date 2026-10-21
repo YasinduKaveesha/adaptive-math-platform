@@ -12,6 +12,7 @@ import { useLocalSearchParams } from 'expo-router';
 
 import type { CreateCSessionRequest } from '@/src/api/generated/openapi-types';
 import { CSessionScreen } from '@/src/features/c-session/c-session-screen';
+import { parseChallengeLength } from '@/src/features/c-session/challenge-length';
 
 function parseGrade(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
@@ -24,8 +25,15 @@ function parseSessionMode(raw: string | undefined): CreateCSessionRequest['sessi
 }
 
 export default function ComponentCSessionRoute() {
-  const params = useLocalSearchParams<{ grade?: string; sessionMode?: string }>();
+  // `challenge` arrives from c-prepare.tsx and is validated there and again here -- an
+  // unrecognised value becomes the default rather than an error, so a hand-typed or stale URL
+  // still plays.
+  const params = useLocalSearchParams<{ challenge?: string; grade?: string; sessionMode?: string }>();
   return (
-    <CSessionScreen grade={parseGrade(params.grade)} sessionMode={parseSessionMode(params.sessionMode)} />
+    <CSessionScreen
+      challenge={parseChallengeLength(params.challenge)}
+      grade={parseGrade(params.grade)}
+      sessionMode={parseSessionMode(params.sessionMode)}
+    />
   );
 }

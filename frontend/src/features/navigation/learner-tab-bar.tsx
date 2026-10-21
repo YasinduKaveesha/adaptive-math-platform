@@ -2,58 +2,92 @@ import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 
+import {
+  LEARNER_TAB_BAR_HEIGHT,
+  LEARNER_TAB_BAR_HEIGHT_COMPACT,
+  LEARNER_TAB_BAR_MARGIN_BOTTOM,
+} from '@/src/features/navigation/chrome-metrics';
+import { useAuth } from '@/src/auth/auth-context';
+import { compdEntryHref } from '@/src/features/compd/compd-gate';
+import { readCompdLearnerState } from '@/src/features/compd/compd-state-cache';
+import { artwork } from '@/src/utils/artwork';
 import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
 import { colors, radius, spacing } from '@/src/theme/tokens';
 
 const tabArtwork = {
-  play: require('../../../assets/images/tabs/game.png'),
-  playSelected: require('../../../assets/images/tabs/game-selected.png'),
-  home: require('../../../assets/images/tabs/home.png'),
-  homeSelected: require('../../../assets/images/tabs/home-selected.png'),
-  profile: require('../../../assets/images/tabs/profile.png'),
-  profileSelected: require('../../../assets/images/tabs/profile-selected.png'),
+  play: artwork.tabGame,
+  playSelected: artwork.tabGameSelected,
+  home: artwork.tabHome,
+  homeSelected: artwork.tabHomeSelected,
+  learn: artwork.tabLearn,
+  learnSelected: artwork.tabLearnSelected,
 };
 
-type LearnerTab = 'home' | 'play' | 'profile';
+// Re-exported; the values live in chrome-metrics.ts. See that file.
+export {
+  LEARNER_TAB_BAR_HEIGHT,
+  LEARNER_TAB_BAR_HEIGHT_COMPACT,
+  LEARNER_TAB_BAR_MARGIN_BOTTOM,
+};
+
+// `null` = the bar is shown with no tab current: the learner profile page, which the header
+// greeting opens and which no longer has a tab of its own since the third tab became compD.
+export type LearnerTab = 'home' | 'play' | 'compd' | null;
 
 export function LearnerTabBar({
   activeTab,
+  activeCompdPressEnabled = false,
   activeHomePressEnabled = false,
   playEnabled = false,
 }: {
   activeTab: LearnerTab;
+  activeCompdPressEnabled?: boolean;
   activeHomePressEnabled?: boolean;
   playEnabled?: boolean;
 }) {
   const compact = useWindowDimensions().height < 760;
   const { requestPlay } = useAdventureCharge();
+  const { me } = useAuth();
 
   return (
-    <View style={[styles.bottomNav, compact && styles.bottomNavCompact]}>
-      <TabItem
-        active={activeTab === 'play'}
-        accessibilityHint={playEnabled ? 'Opens adaptive games' : 'Adaptive games will be available with Component C'}
-        disabled={!playEnabled}
-        label="Play"
-        onPress={requestPlay}
-        selectedSource={tabArtwork.playSelected}
-        source={tabArtwork.play}
-      />
-      <TabItem
-        active={activeTab === 'home'}
-        label="Home"
-        onPress={() => router.replace('/(learner)/home')}
-        pressWhenActive={activeHomePressEnabled}
-        selectedSource={tabArtwork.homeSelected}
-        source={tabArtwork.home}
-      />
-      <TabItem
-        active={activeTab === 'profile'}
-        label="Profile"
-        onPress={() => router.replace('/(learner)/profile')}
-        selectedSource={tabArtwork.profileSelected}
-        source={tabArtwork.profile}
-      />
+    <View style={styles.dock}>
+      <View style={[styles.bottomNav, compact && styles.bottomNavCompact]}>
+        <TabItem
+          active={activeTab === 'play'}
+          accessibilityHint={playEnabled ? 'Opens adaptive games' : 'Adaptive games will be available with Component C'}
+          disabled={!playEnabled}
+          label="Play"
+          onPress={requestPlay}
+          selectedSource={tabArtwork.playSelected}
+          source={tabArtwork.play}
+        />
+        <TabItem
+          active={activeTab === 'home'}
+          label="Home"
+          onPress={() => router.replace('/(learner)/home')}
+          pressWhenActive={activeHomePressEnabled}
+          selectedSource={tabArtwork.homeSelected}
+          source={tabArtwork.home}
+        />
+        {/* Component D (compD, cognitive skill profiling). Once this app session knows the
+            learner has seen compD's intro, the tab goes straight to compD's home; otherwise it goes
+            to the gate, which asks the server. The cache is read at PRESS time, so finishing the
+            intro takes effect on the very next press.
+
+            The learner profile is still reachable through the "Hi, <name>!" header greeting.
+
+            Labelled "Learn" because that is the word drawn into its artwork (the brain icons, owner
+            request 2026-10-21); the label is what a screen reader announces, so it must match. */}
+        <TabItem
+          active={activeTab === 'compd'}
+          accessibilityHint="Opens your learning activities"
+          label="Learn"
+          onPress={() => router.replace(compdEntryHref(readCompdLearnerState(me?.principal.user_id ?? null)))}
+          pressWhenActive={activeCompdPressEnabled}
+          selectedSource={tabArtwork.learnSelected}
+          source={tabArtwork.learn}
+        />
+      </View>
     </View>
   );
 }
@@ -114,6 +148,10 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
   },
   bottomNavCompact: { height: 61 },
+  // Kept as the bar's own wrapper. The "Play Adventure" pill briefly rendered inside it, anchored
+  // to this edge; it is now AdventureChargeProvider's full-screen popup instead, because blurring
+  // the page behind it is not something the bar can do to what is drawn above it.
+  dock: { position: 'relative' },
   navArtwork: { borderRadius: radius.lg, height: '100%', width: '100%' },
   navItem: {
     alignItems: 'center',

@@ -8,10 +8,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, ForbiddenError, ResourceNotFoundError
+from app.core.errors import ClassroomNameMismatchError, ConflictError, ForbiddenError, ResourceNotFoundError
 from app.domain.principal import AuthenticatedPrincipal
-from app.domain.profile_classroom import ClassroomCreateRequest, ClassroomListItem, ClassroomListResponse, ClassroomResponse, LearnerProfileResponse, TeacherProfileResponse
-from app.infrastructure.persistence_models import AppUser, AppUserLearnerLink, AuditEvent, Classroom, IdempotencyRecord, Learner, TeacherProfile
+from app.domain.profile_classroom import ClassroomCreateRequest, ClassroomDeleteRequest, ClassroomDeleteResponse, ClassroomListItem, ClassroomListResponse, ClassroomResponse, LearnerProfileResponse, TeacherProfileResponse
+from app.infrastructure.persistence_models import AppUser, AppUserLearnerLink, AuditEvent, Classroom, ClassroomInvite, ClassroomMembership, IdempotencyRecord, Learner, TeacherProfile
 from app.infrastructure.repositories import AppUserLearnerLinkRepository, AppUserRepository, ClassroomRepository, IdempotencyRecordRepository, TeacherProfileRepository
 from app.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
 
@@ -25,7 +25,7 @@ def fingerprint(body: dict[str, object]) -> str:
 
 
 def provenance(user_id: UUID, request_id: str, operation: str, resource_type: str, resource_id: UUID) -> dict[str, object]:
-    return {"actor_user_id": user_id, "request_id": request_id, "operation_or_event_type": operation, "reason_code": "AUTHORIZED_PROFILE_CLASSROOM_COMMAND", "resource_type": resource_type, "resource_id": resource_id, "source_class": "REAL", "source_system": "upadya-api", "environment": "live-endpoint", "schema_revision": SCHEMA_REVISION}
+    return {"actor_user_id": user_id, "request_id": request_id, "operation_or_event_type": operation, "reason_code": "AUTHORIZED_PROFILE_CLASSROOM_COMMAND", "resource_type": resource_type, "resource_id": resource_id, "source_class": "REAL", "source_system": "studentapp-api", "environment": "live-endpoint", "schema_revision": SCHEMA_REVISION}
 
 
 class ProfileClassroomService:
@@ -156,7 +156,7 @@ class ProfileClassroomService:
             if replay is not None:
                 return ClassroomResponse.model_validate(replay)
             if payload.name is not None:
-                duplicate = await uow.session.scalar(select(Classroom.classroom_id).where(Classroom.teacher_profile_id == teacher.teacher_profile_id, func.lower(func.btrim(Classroom.name)) == payload.name.lower()))
+                duplicate = await uow.session.scalar(select(Classroom.classroom_id).where(Classroom.teacher_profile_id == teacher.teacher_profile_id, Classroom.deleted_at_utc.is_(None), func.lower(func.btrim(Classroom.name)) == payload.name.lower()))
                 if duplicate is not None:
                     raise ConflictError()
             classroom_id = uuid4()
@@ -182,3 +182,57 @@ class ProfileClassroomService:
             if classroom is None:
                 raise ResourceNotFoundError()
             return ClassroomResponse(classroom_id=classroom.classroom_id, name=classroom.name, grade=classroom.grade, teacher_profile_id=teacher.teacher_profile_id, created_at_utc=classroom.created_at_utc, row_version=classroom.row_version, request_id=request_id)
+
+    async def delete_classroom(self, principal: AuthenticatedPrincipal, classroom_id: UUID, payload: ClassroomDeleteRequest, key: str, request_id: str) -> ClassroomDeleteResponse:
+        """Soft-delete a classroom the teacher owns (migration 20260914_0009).
+
+        One transaction: the classroom is marked deleted, its join code is revoked so it can
+        no longer be redeemed, and every PENDING or APPROVED membership becomes REMOVED --
+        which frees each learner to join another classroom with a new code. No learner row,
+        session, attempt or Component 3 row is changed or erased.
+        """
+        async with self._uow_factory() as uow:
+            user, teacher = await self._teacher_context(uow.session, principal)
+            body = {"classroom_id": str(classroom_id), "confirmation_name": payload.confirmation_name}
+            idem, replay = await self._idempotency_start(uow.session, user, "classroom.delete", key, body, request_id)
+            if replay is not None:
+                return ClassroomDeleteResponse.model_validate(replay)
+            owned = await ClassroomRepository(uow.session).get_owned(classroom_id, teacher.teacher_profile_id)
+            if owned is None:
+                raise ResourceNotFoundError()
+            classroom = await uow.session.scalar(select(Classroom).where(Classroom.classroom_id == classroom_id).with_for_update())
+            if classroom.deleted_at_utc is not None:
+                raise ResourceNotFoundError()
+            # Exact match after trimming the ends -- not case-insensitive. The teacher is shown
+            # the name and asked to type it; "2a" for "2A" is not that.
+            if classroom.name is None or payload.confirmation_name.strip() != classroom.name.strip():
+                raise ClassroomNameMismatchError()
+            now = datetime.now(UTC)
+            classroom.deleted_at_utc = now
+            classroom.deleted_by_user_id = user.user_id
+            classroom.row_version += 1
+            invites = await uow.session.scalars(
+                select(ClassroomInvite).where(ClassroomInvite.classroom_id == classroom_id, ClassroomInvite.revoked_at_utc.is_(None)).with_for_update()
+            )
+            for invite in invites:
+                invite.revoked_at_utc = now
+                invite.row_version += 1
+            memberships = await uow.session.scalars(
+                select(ClassroomMembership)
+                .where(ClassroomMembership.classroom_id == classroom_id, ClassroomMembership.state.in_(("PENDING", "APPROVED")))
+                .with_for_update()
+            )
+            removed = 0
+            for membership in memberships:
+                membership.state = "REMOVED"
+                membership.decided_at_utc = now
+                membership.decided_by_user_id = user.user_id
+                membership.row_version += 1
+                removed += 1
+            await uow.session.flush()
+            self._audit(uow.session, user.user_id, request_id, "classroom.deleted", "classroom", classroom_id)
+            response = ClassroomDeleteResponse(classroom_id=classroom_id, deleted_at_utc=now, removed_membership_count=removed, row_version=classroom.row_version, request_id=request_id)
+            self._finish(idem, response.model_dump(mode="json"))
+            idem.response_status = 200
+            await uow.commit()
+            return response

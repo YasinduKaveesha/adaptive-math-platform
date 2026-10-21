@@ -44,7 +44,6 @@ from app.infrastructure.persistence_models import (
     TeacherProfile,
 )
 from app.infrastructure.repositories import (
-    AppUserLearnerLinkRepository,
     AppUserRepository,
     ClassroomInviteRepository,
     ClassroomMembershipRepository,
@@ -140,7 +139,7 @@ def provenance(user_id: UUID, request_id: str, operation: str, resource_type: st
         "resource_type": resource_type,
         "resource_id": resource_id,
         "source_class": "REAL",
-        "source_system": "upadya-api",
+        "source_system": "studentapp-api",
         "environment": "live-endpoint",
         "schema_revision": SCHEMA_REVISION,
     }
@@ -166,10 +165,12 @@ class ClassroomMembershipService:
         return user, profile
 
     async def _require_learner(self, session, principal: AuthenticatedPrincipal) -> tuple[AppUser, UUID]:
-        user = await self._require_user(session, principal)
+        found = await AppUserRepository(session).find_with_learner_link_by_subject(principal.user_id)
+        if found is None:
+            raise ResourceNotFoundError()
+        user, link = found
         if user.profile_type != "LEARNER":
             raise ForbiddenError()
-        link = await AppUserLearnerLinkRepository(session).find_by_user(user.user_id)
         if link is None:
             raise ResourceNotFoundError()
         return user, link.learner_id
@@ -243,10 +244,31 @@ class ClassroomMembershipService:
             idem, replay = await self._idempotency_start(uow.session, user, "classroom_invite.create", key, fp, request_id)
             if replay is not None:
                 return InviteCreateResponse.model_validate(replay)
+            # One live join code per classroom. Idempotency-Key only collapses retries of the
+            # same call; two calls with different keys would otherwise mint a second code that
+            # also resolves, while the teacher can only ever read one of them back.
+            now = datetime.now(UTC)
+            invite_repository = ClassroomInviteRepository(uow.session)
+            existing = await invite_repository.find_live_by_classroom(classroom_id, now)
+            if existing is not None:
+                response = InviteCreateResponse(
+                    classroom_invite_id=existing.classroom_invite_id,
+                    # The plaintext was shown once, at creation, and only its hash was kept.
+                    invite_token=None,
+                    token_already_issued=True,
+                    expires_at_utc=existing.expires_at_utc,
+                    created_at_utc=existing.created_at_utc,
+                    request_id=request_id,
+                )
+                self._finish(idem, response.model_dump(mode="json"), 200)
+                await uow.commit()
+                return response
             canonical_code = generate_classroom_join_code()
             token_hash = hash_join_code(canonical_code)
             invite_id = uuid4()
-            expires_at = datetime.now(UTC) + timedelta(hours=24)
+            # A classroom join code does not expire. It dies when the classroom is deleted
+            # (revoked_at_utc), never on a clock -- children write it down.
+            expires_at = None
             invite = ClassroomInvite(
                 classroom_invite_id=invite_id,
                 classroom_id=classroom_id,
@@ -264,7 +286,7 @@ class ClassroomMembershipService:
                 "classroom_invite_id": str(invite_id),
                 "invite_token": None,
                 "token_already_issued": True,
-                "expires_at_utc": invite.expires_at_utc.isoformat(),
+                "expires_at_utc": invite.expires_at_utc.isoformat() if invite.expires_at_utc is not None else None,
                 "created_at_utc": invite.created_at_utc.isoformat(),
                 "request_id": request_id,
             }

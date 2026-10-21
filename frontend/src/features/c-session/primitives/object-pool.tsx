@@ -49,6 +49,8 @@ import {
   TOKEN_SPACING,
   TOKEN_TOUCH_TARGET_SIZE,
 } from '@/src/features/c-session/motor-constants';
+import { AppText } from '@/src/components/app-text';
+import { labelForCountableEmoji, pickCountableEmoji } from '@/src/utils/countable-emoji';
 import { radius } from '@/src/theme/tokens';
 
 // A LAYOUT bound on how many rows are visible before the pool scrolls internally, not a catalogue
@@ -97,6 +99,11 @@ export type ObjectPoolProps = {
 };
 
 export function ObjectPool({ accent, disabled = false, objectIds, onToggle, scrollable = true, selectedIds }: ObjectPoolProps) {
+  // ONE emoji for the whole pool, seeded from the object ids so it is stable across every
+  // re-render -- and this pool re-renders on every tap, since selection lives in state. A
+  // `Math.random()` here would reshuffle the fruit each time a child selected one.
+  const emoji = pickCountableEmoji(objectIds.join('|'));
+  const emojiLabel = labelForCountableEmoji(emoji);
   const scrollRef = useRef<ScrollView>(null);
   const previousCount = useRef(objectIds.length);
 
@@ -115,7 +122,7 @@ export function ObjectPool({ accent, disabled = false, objectIds, onToggle, scro
     const isSelected = selectedIds.has(id);
     return (
       <Pressable
-        accessibilityLabel={`object ${index + 1}`}
+        accessibilityLabel={`${emojiLabel} ${index + 1}`}
         accessibilityRole="button"
         accessibilityState={{ disabled, selected: isSelected }}
         delayLongPress={GESTURE_LONG_PRESS_MS}
@@ -125,12 +132,17 @@ export function ObjectPool({ accent, disabled = false, objectIds, onToggle, scro
         onPress={() => onToggle(id)}
         style={({ pressed }) => [
           styles.object,
-          { backgroundColor: hexToRgba(accent, UNSELECTED_FILL_ALPHA), borderColor: accent },
-          isSelected && { backgroundColor: accent },
+          // SELECTED is carried by a ring AND a tinted ground AND the emoji's own scale -- three
+          // cues, because the disc that used to encode it by fill is gone. Selection must never
+          // rest on colour alone for a child who may not distinguish two tints of one accent.
+          isSelected && { backgroundColor: hexToRgba(accent, UNSELECTED_FILL_ALPHA), borderColor: accent },
           disabled && styles.objectDisabled,
           pressed && !disabled && styles.pressed,
-        ]}
-      />
+        ]}>
+        <View style={isSelected ? styles.glyphSelected : styles.glyph}>
+          <AppText style={styles.glyphText}>{emoji}</AppText>
+        </View>
+      </Pressable>
     );
   });
 
@@ -148,10 +160,19 @@ export function ObjectPool({ accent, disabled = false, objectIds, onToggle, scro
 const styles = StyleSheet.create({
   // Fill and border colour are both applied inline per-object, from the family accent -- see
   // hexToRgba/UNSELECTED_FILL_ALPHA above. No static colour here.
+  // NO DISC. The box is the touch target and the selection ring only -- transparent and
+  // border-less until selected, so what a child sees is the emoji itself. The full
+  // TOKEN_TOUCH_TARGET_SIZE is kept, so reachability is unchanged from the disc version.
+  glyph: { alignItems: 'center', justifyContent: 'center' },
+  glyphSelected: { alignItems: 'center', justifyContent: 'center', transform: [{ scale: 1.12 }] },
+  glyphText: { fontSize: Math.round(TOKEN_TOUCH_TARGET_SIZE * 0.62), lineHeight: Math.round(TOKEN_TOUCH_TARGET_SIZE * 0.78) },
   object: {
+    alignItems: 'center',
+    borderColor: 'transparent',
     borderRadius: radius.pill,
     borderWidth: 2,
     height: TOKEN_TOUCH_TARGET_SIZE,
+    justifyContent: 'center',
     width: TOKEN_TOUCH_TARGET_SIZE,
   },
   objectDisabled: { opacity: 0.55 },

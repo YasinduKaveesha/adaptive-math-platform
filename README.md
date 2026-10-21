@@ -23,6 +23,90 @@ The platform has two learning components:
   with a rule-based difficulty policy and a safety controller. Selection is entirely
   backend-driven; the frontend never chooses a game family.
 
+## First run — do these in order
+
+A fresh clone is **not** a running system. Follow these six steps in sequence; step 4 is the one
+most easily missed, and skipping it makes Component C fail on every attempt with no useful error.
+
+| # | Step | Skipping it causes |
+|---|---|---|
+| 1 | Create a Supabase project (authentication) | Nobody can sign in at all |
+| 2 | Choose a database and set `DATABASE_URL` | Backend will not start |
+| 3 | Run migrations (`alembic upgrade head`) | Every request fails — no tables exist |
+| 4 | **Register the Component C runtime bundle** | **Component C returns HTTP 409 on every session** |
+| 5 | Provision a learner and classroom | Sign-in works, but the app is stuck in onboarding |
+| 6 | Start the frontend | Nothing to use |
+
+### 1. Supabase project (required — authentication)
+
+Authentication is **not optional and has no local substitute.** Create a free project at
+`https://supabase.com`, then from **Project Settings → API** copy these into `backend/.env`:
+
+```
+SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
+SUPABASE_JWT_ISSUER=https://YOUR-PROJECT-REF.supabase.co/auth/v1
+SUPABASE_JWT_AUDIENCE=authenticated
+SUPABASE_JWKS_URL=https://YOUR-PROJECT-REF.supabase.co/auth/v1/.well-known/jwks.json
+```
+
+and these into `frontend/.env.local`:
+
+```
+EXPO_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR-PUBLISHABLE-KEY
+```
+
+The backend verifies token signatures against the JWKS endpoint. It never calls a Supabase data
+API — see step 2, which is a separate decision.
+
+### 2. Choose a database
+
+Supabase is itself PostgreSQL, so this is a choice of **who hosts it**, not of database engine.
+Both options use the same schema, migrations and code.
+
+**Option A — Supabase Postgres (recommended for handover).** No Docker required. From
+**Project Settings → Database**, copy the connection string into `backend/.env` as `DATABASE_URL`.
+Paste it verbatim — `sslmode` and connection-pooler handling are dealt with in
+`app/infrastructure/database.py`, so nothing needs editing out of it.
+
+- Use the **direct connection** (port `5432`) if it resolves.
+- Use the **transaction pooler** (port `6543`) if it does not — Supabase's direct hostname is
+  IPv6-only on projects without the IPv4 add-on.
+
+Note that Supabase pauses free projects after roughly a week of inactivity; an app that
+"stopped working" after a quiet period usually just needs the project resumed from the dashboard.
+
+**Option B — local Postgres in Docker.** Self-contained and offline, but every machine needs steps
+3–5 run again from scratch. Keep the `DATABASE_URL` that `.env.example` ships with.
+
+### 3–5. Initialise the database
+
+**These steps are required exactly once per database.** With Option A, whoever performs the
+handover can run them ahead of time so the recipient inherits a working system.
+
+```bash
+cd backend
+cp .env.example .env          # then edit in the values from steps 1 and 2
+
+# 3 — create the schema
+alembic upgrade head
+
+# 4 — REQUIRED. Register the Component C runtime bundle.
+#     Migrations create the table; only this creates the row Component C needs.
+python -m scripts.register_c_runtime_bundle
+
+# 5 — create a teacher, a classroom, and a join code
+python scripts/dev_fixture_learner.py --test-fixture-only --mint-invite-only --api-base http://localhost:8000
+```
+
+Step 4 is idempotent — running it twice will not create a second row. Run it as
+`python -m scripts.register_c_runtime_bundle`, **never** `python scripts/register_c_runtime_bundle.py`;
+the latter breaks provenance resolution.
+
+Under Docker, prefix steps 3 and 4 with `docker compose run --rm api `.
+
+---
+
 ## Getting started
 
 ### Backend
@@ -124,7 +208,41 @@ npx tsc --noEmit
 npm run test:contract
 ```
 
-## Project history
+## Running the tests safely
+
+**Never run the test suite against a database holding data you care about.** Six
+migration-reversibility tests downgrade and re-upgrade the schema, which drops and recreates
+**every table, empty** — including `app_users`, all classroom tables, and the Component C runtime
+bundle row from first-run step 4. This is not hypothetical: it destroyed a real onboarding
+account's classroom membership on 2026-08-27, and the symptom looked like a login bug rather than
+data loss.
+
+Under Docker this is already handled — `api-test` points at a separate `upadya_test` database:
+
+```bash
+docker compose run --rm --no-deps api-test python -m pytest -q
+```
+
+Outside Docker, or against a hosted database, **you must point `DATABASE_URL` at a throwaway
+database first.** On Supabase that means a **second project**, never the one holding your data.
+
+After any full test run against a database you then intend to use, re-run first-run step 4
+(`python -m scripts.register_c_runtime_bundle`) — the bundle row will have been erased.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| **Component C fails every time; HTTP 409 on session creation** | The `c_runtime_bundle_records` row is missing — first-run step 4 was never run, or a test run erased it. The error deliberately reveals nothing about which gate failed | `python -m scripts.register_c_runtime_bundle` |
+| `connect() got an unexpected keyword argument 'sslmode'` | An older build, or a hand-edited connection string. `sslmode` is libpq syntax that asyncpg rejects | Paste the provider's string unmodified; `app/infrastructure/database.py` strips it |
+| Database host will not resolve (Supabase) | The direct hostname is IPv6-only without the IPv4 add-on | Use the transaction pooler on port `6543` |
+| `prepared statement "__asyncpg_stmt_x__" does not exist` | A transaction-mode pooler is multiplexing connections | Confirm the URL uses port `6543` or a `pooler.` hostname so the statement caches are disabled automatically |
+| Everything worked, now nothing connects (Supabase) | Free projects pause after about a week of inactivity | Resume the project from the Supabase dashboard |
+| The app opens but is stuck asking for a classroom code | First-run step 5 was not completed, or the membership is still pending | Mint a code, then approve the request — see the dev-fixture commands below |
+| Backend changes appear to have no effect | Nothing is bind-mounted, and a running container keeps its old image | `docker compose build api` then `docker compose up -d --force-recreate api` |
+| A learner surface shows "This one isn't ready" | Expected for three deliberately held templates (`C-SF-02`, `C-TC-02`, `C-CC-04`) — the safety design working, not a defect | No action; see `backend/buildLog2.md` |
+
+## Project history uu
 
 `backend/buildLog1.md` and `backend/buildLog2.md` are the durable, append-only build record for
 this project — every batch of work, every finding, every owner ruling is recorded there in the

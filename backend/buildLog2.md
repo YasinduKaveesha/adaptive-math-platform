@@ -2714,3 +2714,865 @@ names `requirements.txt` as the one not to use, rather than silently working aro
 removing a dependency manifest is a different class of change than removing a planning document,
 and it wasn't asked for. Owner: confirm whether `requirements.txt` should be deleted outright or
 regenerated from `requirements.in` to match `requirements.lock`.
+
+## 2026-08-27 -- Component C submit UX: an in-flight gate, and `task_already_terminal` treated as benign
+
+Two frontend-only fixes, raised by the owner after playing a real session against the Supabase-
+hosted database. Neither touches the backend; `git diff --stat` over `app/application`,
+`app/domain`, `app/api` and `migrations/` is empty for this batch.
+
+### What was actually wrong -- measured, not guessed
+
+Against the hosted database, submitting felt dead for several seconds and then frequently showed
+the technical-block screen ("Something changed on our end"). Latency, measured from inside the api
+container against both databases in the same run:
+
+| | connect | `select 1` median | min | max |
+|---|---:|---:|---:|---:|
+| Supabase (`ap-southeast-1`, session pooler) | 1754.4 ms | **203.2 ms** | 156.3 | 334.5 |
+| Local Docker Postgres | 41.3 ms | **0.2 ms** | 0.1 | 0.5 |
+
+`submit_action` performs on the order of 15-25 queries (row lock, event count, payload validation,
+evaluation, three-to-four event writes, summary derivation, policy decision, scaffold event). At
+~200 ms per round trip that is several seconds of an apparently unresponsive SUBMIT, so the child
+taps again; the second request is refused by the T1-4 guard with `task_already_terminal`
+(`task_service.py:664-666`), a 409, which `classifySessionFailure` routes to the technical-block
+screen.
+
+**The data was never corrupted, and the backend was never wrong.** The gameplay tables for that
+session were checked directly: 26 events across 6 instances (5 complete x 5 events + 1 offered),
+`attempt_number` 1 throughout, five `completed_correct` terminal events, five summaries -- exactly
+consistent, with no duplicate writes. The duplicate submissions wrote nothing, which is the guard
+working as designed. What was wrong was that a correct backend refusal was being shown to a child
+as an application failure.
+
+### Fix 1 -- the submit-in-flight gate
+
+`createSubmitGate()` (`c-session-logic.ts`): a one-slot mutual-exclusion cell, `tryEnter` /
+`release` / `isBusy`. `c-session-screen.tsx` holds one per mounted screen in a `useRef` and takes
+it in `submitFromSurface` **before the first `await`**, releasing in `finally`.
+
+**It is a ref, not `useState`, and the placement is load-bearing.** `setState` is asynchronous and
+batched: two taps dispatched in the same frame both read the pre-update value, both pass a
+`if (submitting) return` check, and both submit. A guard taken after any `await` reopens the same
+race at the suspension point. A `useState` implementation passes a naive sequential test and fails
+the concurrent one, which is why the test drives two overlapping callers rather than two sequential
+calls.
+
+A separate `submitting` state drives an overlay inside the task panel (`ActivityIndicator` in the
+family accent, over a translucent scrim). The overlay does two jobs: it tells the child the answer
+is being processed, and it absorbs taps -- covering the card means no archetype's own SUBMIT is
+reachable while a request is out, **without this file reaching into eight surfaces to disable eight
+separate buttons**. The gate alone still guarantees single submission if the overlay were removed.
+
+### Fix 2 -- `task_already_terminal` handled as the benign duplicate
+
+`isDuplicateSubmissionConflict(error)` (`c-session-logic.ts`), consulted at exactly one call site:
+the catch in `handleSubmit`. On a match the existing `feedback` field is set to
+`{ matched: true, scaffoldLevel: prev.task.scaffold_state }` -- the same field, the same
+`AnswerFeedbackPanel`, the same child-initiated "Next" to advance. No parallel flow.
+
+**`classifySessionFailure` was NOT widened, deliberately.** Its own header states it reads
+`error.kind` and nothing else so that two differently-caused 409s cannot reach the screen
+differently; teaching it to sniff envelopes would dismantle the property it exists to guarantee.
+The narrowing therefore lives at the call site, and every 409 the predicate does not positively
+recognise still falls through to `classifySessionFailure` unchanged. A test asserts that function
+still routes *every* 409 -- including this one -- to `technical-block`, so a later "simplification"
+of the two into one fails loudly.
+
+**Why the detail is trustworthy here, when the gate refusals' 409s are not:** the unsigned-parameter
+and non-active-session refusals raise a BARE `ConflictError` with no details at all
+(`task_service.py:375`, `:389`); this one is raised with an explicit structured body,
+`[{"location": ["c_task_instance_id"], "type": "task_already_terminal"}]`. The distinction is a
+real difference in what the server sends, not an inference from a message string. A test pins the
+bare-409 case to `technical-block` precisely so the two never blur.
+
+**The assumption `matched: true` rests on, recorded because it is load-bearing and could silently
+break:** `completed_correct` is the ONLY wired terminal reason (Phase 6a T1; the other eight are
+explicitly fail-closed and documented as not built in `terminal_event.py`'s own header, T1-1/T1-5).
+An instance can therefore only be terminal because the child already answered correctly. **If a
+second terminal reason is ever wired, this inference breaks and `isDuplicateSubmissionConflict`'s
+call site must be revisited before that lands.**
+
+### Verification
+
+- `npx tsc --noEmit` -- exit 0.
+- `npm run test:contract` -- **1341 tests, 1341 pass, 0 fail.**
+- **Reconciled by measurement, not by arithmetic on a documented number.** The suite was re-run
+  with the two new files removed, giving **1327**; 1327 + 6 (gate) + 8 (duplicate) = 1341.
+  `HANDOVER.md`'s long-standing `1324` was stale -- measured at `4916d04`, before the
+  sign-in/welcome/adventure-charge batches -- and has been corrected there with a note, since §6.5
+  had already warned about exactly this row.
+- Backend logic untouched: `git diff --stat` over `app/application`, `app/domain`, `app/api`,
+  `migrations/` is empty. `task_already_terminal` is still raised at `task_service.py:665`.
+- Fix 1 intact after Fix 2: the gate take/release and the overlay are all still present and
+  covered.
+
+### Not done, deliberately
+
+The fail-closed frame's own wording is still engineer-facing ("This one isn't ready" plus a visible
+UUID), and the technical-block screen's copy is unchanged. Both remain child-facing copy questions
+routed to pedagogical sign-off per `ESCALATIONS.md` section 4, not to whoever is holding the
+builder pen. Nothing in this batch changes any wording shown to a child.
+
+## 2026-09-21 -- Play prep card bars now show real BKT mastery, as bar length only (product-owner ruling)
+
+**The ruling.** The Play prep card's seven skill bars were a staged animation to fixed targets
+(62/48/55/71/44/37/29) -- a warm-up cue, deliberately not a report, because no B response exposed
+mastery. The product owner (Yasindu Kularathne) asked for the bars to reflect the child's actual
+values and, on being shown the governance below, ruled: **mastery may be shown to the child as the
+length of a bar only -- never as a number, label, percentage, or spoken value.**
+
+**What this crosses, stated plainly.** `provenance/component-b-be2-governance-authorization.json`
+carries the blocker "safe-progress and descriptive summary policy", status UNRESOLVED, required
+approver "product owner and academic/research approver", permitted behaviour while unresolved:
+"Expose no session summary, progress label, mastery, certification, readiness, recommendation, or
+provisional scientific result." `app/domain/b_completion.py` cites it as the reason no B DTO
+carries `p_l`. This entry records the product owner's side of that two-party approval. **The
+academic/research approver's sign-off is NOT on file** as of this entry; the product owner
+proceeded knowing that. If that sign-off is later refused, the revert is one route and one prop.
+
+**What it does not cross.** The C-4 boundary (`live_engine_c/mastery_fixture.py`: Component C
+must not consume B's estimate as engine input) is untouched -- Component C still receives the
+fixture. This is Component B reading its own table for its own learner over its own route. The
+BE3c private/public split (no mastery on any task-presentation DTO) is untouched.
+
+**Backend.** New `GET /api/v1/b/learner/skill-states` (`app/api/routes/b_learner.py`,
+`app/application/learner_skill_states.py`, `app/domain/b_skill_state.py`): the caller's own
+`b_learner_skill_states` rows as `{skill_id, p_l, observation_count}`, sorted by skill_id, learner
+role only (teacher 403, unlinked/unknown 404, no token 401). Read-only: a learner with no B
+history gets `[]`, and the read never seeds priors (unlike `load_or_init_skill_states`, which is a
+session-start side effect). Route added to `EXPECTED_ROUTES`; `contract/openapi.v1.json`
+regenerated inside the Docker image (Git Bash, LF), checksum `fe153061...486635` into the meta
+file; diff is purely additive (+70/-0). `tests/test_learner_skill_states.py`: 4 tests.
+
+**Frontend.** `src/features/home/skill-bar-fill.ts` is the ONE place a probability becomes a
+width, and encodes the two honesty rules: a skill with no row draws empty, and a row with
+`observation_count` 0 ALSO draws empty -- that row's `p_l` is the bundle's P(L0) prior seeded at
+first session start, not evidence about this child (a Grade 2 learner's "Division" sits at the
+prior forever). `play-prep-card.tsx` takes `skillStates`, feeds `fills[skill.key]` to exactly one
+place (the animated width), and marks the track `accessible={false}` with no progressbar role and
+no `accessibilityValue`, so a screen reader cannot announce the number the child must not get.
+`adventure-charge-context.tsx` fetches fresh on every Play press (never cached across presses; a
+stale response from a dismissed card is dropped by a request counter), best-effort and independent
+of the game prefetch -- "Start Game" never waits on it, and any failure leaves the bars empty.
+`tests/prep-card-skill-bar-fill.test.ts` pins the fill rule, the validator bounds, and -- by
+source scan -- that the card prints no numeric mastery anywhere.
+
+**Verified.** Backend: `test_be5a_contract_freeze`, `test_be2_architecture_guards`,
+`test_c4b_routes_and_bundle_config`, `test_learner_skill_states` -- 80 passed; full suite through
+`api-test`: 666 passed, 0 failed, 76 skipped. Frontend: `tsc --noEmit` clean, `test:contract` 1350 passed. Live: the endpoint on
+the Supabase-backed API answers 401 unauthenticated. On Supabase today 14 of 144 learners have any
+skill-state rows (the rest have never started a B session), so most accounts will see empty bars
+until they complete a Component B session -- that is the design working, not a fault.
+
+Owner: Yasindu. Academic/research approver: not recorded.
+
+## 2026-09-27 -- the answering clock now starts at the render, not at selection (owner ruling)
+
+**The problem prefetching exposed.** `timeout_deadline_utc` was fixed in `open_opportunity` as
+`now + DEFAULT_TIMEOUT` (5 minutes) at SELECTION. Once Home's hero/resume press and the preparation
+screen began prefetching the first question, selection moved to before the child is looking at
+anything, so server and network time was being spent from the child's answering budget. Overrunning
+it is not cosmetic: no server sweep records timeouts, so one is written only when the client submits
+after the deadline, and `attempt_submission.py` then sets `submitted_value = None` and never grades
+the answer. A slow prefetch could silently discard a child's first real answer.
+
+**Governance.** `provenance/component-b-closure-decisions.json`'s `timeout policy` entry
+(`SEMANTICS_PROVISIONAL_NUMERIC_THRESHOLD_UNRESOLVED`) already rules: *"Infrastructure failure is
+never learner failure; numeric server timeout is not approved."* Charging prefetch and network time
+to the learner is exactly that failure mode, so this is a correction TOWARD the standing ruling, not
+a new policy. **The numeric threshold is untouched and remains unapproved** -- only the moment the
+clock starts moves. Owner chose this over simply not enforcing the deadline (the other option put).
+
+**Backend.** New route `POST /api/v1/b/sessions/{session_id}/opportunities/{item_opportunity_id}/presented`
+(`app/api/routes/b_session.py`, `app/application/presentation_ack.py`, `app/domain/b_presentation_ack.py`).
+No idempotency key and no body, for the same reason `select_opportunity` has neither: the operation
+is intrinsically once-only. 200, not 201 -- nothing is created. `open_opportunity` now writes
+`presented_at_utc=None` (the column is nullable and had no readers; no migration), keeping the
+selection-time deadline only as a fail-safe bound for an opportunity that is never acknowledged.
+`OpportunityPersistenceService.anchor_presentation` takes a row lock, returns `(record, anchored)`,
+and **anchors once**: the first acknowledgement sets `presented_at_utc = now` and
+`timeout_deadline_utc = now + timeout`; every later one is a no-op returning the same deadline, so a
+remount, relaunch, retry or deliberate reload can neither extend nor shorten what the child has. A
+CLOSED opportunity is 409; another learner's is 404; unauthenticated is 401 and anchors nothing.
+
+**Contract and guards.** Route added to `EXPECTED_ROUTES` plus its own
+`AUTHORIZED_B_PRESENTATION_ACK_OPERATIONS` set -- needed because the path contains "session", a
+prohibited scientific path term that is exempt only for routes in an authorized set; widening the
+term list instead would have weakened the guard for every route. `contract/openapi.v1.json`
+regenerated in the Docker image (Git Bash, LF, 0 CR bytes verified), checksum `d0d2c8cf...96d9c1`;
+diff purely additive (+154/-0).
+
+**Frontend.** `live-session-screen.tsx` fires the acknowledgement from the `'question'` phase only
+-- acknowledging a loading or failed phase would start the clock on something the child cannot see
+-- guarded by `ackedOpportunityRef` so a re-render does not re-send, and adopts the returned
+deadline in place of the selection-time one. Best-effort and silent: a failure leaves the fail-safe
+deadline, which is the pre-route behaviour, so there is nothing to show the child.
+
+**Tests.** `tests/test_presentation_ack.py` (7): selection leaves the question un-presented; the
+first acknowledgement moves the deadline LATER and by the governed span; repeats are no-ops that
+change neither timestamp; CLOSED is 409; cross-learner is 404 and anchors nothing; unknown ids 404;
+unauthenticated 401. Frontend: validator bounds plus a source scan pinning the once-per-opportunity
+guard and the deadline adoption. Full suites through `api-test`: backend 681 passed, 0 failed,
+76 skipped; frontend `tsc --noEmit` clean and `test:contract` 1365 passed.
+
+Owner: Yasindu. Academic/research approver: not recorded (threshold unchanged, so unaffected).
+
+## 2026-09-28 -- "equally" restored, and a localisation seam for Sinhala
+
+**"equally" put back into B-DIV01.** The 2026-09-27 ESL pass shortened "Share 22 equally between 2"
+to "Share 22 between 2", which was a mistake and is now reverted. Equal sharing IS the mathematical
+content of that item: without the word, "share 22 between 2" permits 21 and 1 and the question
+stops being the question. `prompt_wording.py`'s rule 2 now states the distinction it should have
+had from the start -- a word is removed only when it is REGISTER; a word that carries the
+mathematics stays even when it is long. "equally" joins "tens", "ones", "hundreds" and "groups" in
+the kept vocabulary.
+
+**Why a localisation seam at all.** Asked whether the questions are now suitable for Sri Lankan
+children, the honest answer was no -- the English is simpler, which is real, but simpler English is
+a MITIGATION and not a solution for children who read Sinhala first. Even "How many do you see?" is
+five English words to decode before any mathematics starts. For a study that means to measure
+mathematical ability that is a validity problem, not only a usability one: a wrong answer cannot be
+read as "could not do the maths" when it may mean "could not read the question". Confirmed by
+inspection that the product had NO localisation of any kind before this entry -- no i18n library,
+no locale handling, every string hard-coded English, front and back.
+
+**Backend.** New `app/domain/live_engine/locales.py`: a `Locale` of `en`/`si`, `resolve_locale`
+(accepts `si`, `si-LK`, and a full `Accept-Language` with quality values; anything unrecognised
+resolves to English rather than raising), and `DEFAULT_LOCALE = "en"`. `prompt_wording.py` and
+`prompt_instructions.py` gain per-locale tables, and both resolvers FALL BACK PER STRING: a
+template with no Sinhala serves its English wording, never a gap, a placeholder or a crash. That
+per-string rule is the point -- it lets translations land one reviewed item at a time instead of
+needing all 29 before any can ship. The locale is threaded through
+`project_task_instance_to_presentation` -> `open_adaptive_opportunity` /
+`reissue_presentation_for_open_opportunity` -> `select_next_opportunity`, and the route reads it
+from `Accept-Language`: the standard way to say this, CORS-safelisted (so no allow-list change),
+and needing no migration or contract field. Contract regenerated in the image (LF, 0 CR bytes
+verified), checksum `4a0fa610...f73e`; diff purely additive (+171/-0).
+
+**Frontend.** `src/config/locale.ts` reads `EXPO_PUBLIC_LEARNER_LOCALE` and sends
+`Accept-Language` on every request. Sinhala is sent as `si-LK,si;q=0.9,en;q=0.5` so the server can
+negotiate down per item rather than being told Sinhala-or-nothing. The app never translates
+anything itself -- it says which language it wants and relays what the server sends, exactly as it
+never composes a stem itself.
+
+**THE SINHALA STRINGS ARE A FIRST DRAFT AND ARE NOT REVIEWED.** Six stems and three instructions,
+written to prove the path end to end by someone who is not a Sinhala-speaking primary teacher. They
+are marked as such in both modules, the tables are deliberately PARTIAL, and English is the default
+at every level (`DEFAULT_LOCALE`, `DEFAULT_LEARNER_LOCALE`, and an unset env var), so nothing
+unreviewed can reach a child by accident. Setting the variable to `si` is a conscious act, which is
+what makes the draft testable without shipping it to a classroom.
+
+**Open, and owner's to close:** get the English wording AND the Sinhala in front of a Grade 2
+teacher who teaches these children. Specific English strings flagged as doubtful: "Break N into
+tens and ones" ("break" everyday means damage), "Pick the right sign" (assumes "sign" and the
+meaning of < > =), "Count on N more" (English-medium pedagogical jargon), "Is it the same or
+changed?" ("it" has no referent), "Tap N things" ("things" is vague).
+
+**Tests.** `tests/test_locales.py` (19): resolution across real `Accept-Language` values including
+a preferred-unsupported-then-supported case; English default; per-string fallback in both
+directions; no half-rendered sentence in any locale for any template across 6 seeds; Sinhala tables
+are a subset of English and contain no stale template id; Sinhala strings are actually Sinhala
+script and keep digits as digits. Frontend: locale defaulting and header negotiation.
+Full suites: backend 708 passed, 0 failed, 76 skipped; frontend 1374 contract + 18 render
+passed, `tsc --noEmit` clean, lint 0 errors.
+
+Owner: Yasindu. Sinhala wording: NOT reviewed. Academic/research approver: not recorded.
+
+## 2026-09-28 -- Component C: wording simplified for Sinhala-first learners, and the big task card removed
+
+**Wording.** All 30 Component C templates (32 strings, two carry variants) rewritten to the rules
+Component B's wording follows, and deliberately to the SAME PHRASES where the question is the same,
+so a child moving between the two components meets one vocabulary rather than two: "Which number
+shows how many?", "Put the two groups together. How many?", "Take away this many. How many are
+left?", "Put these in order. Small to big.", "What comes next?" are now shared across both.
+
+Register words removed: "array", "column", "select", "object", "subtract", "trade", "smallest"/
+"largest". "Build the array shown." -> "Make the rows of squares shown."; "Select every object one
+time." -> "Tap each thing one time." "Change X into Y" replaces both "trade" (commerce) and "break"
+(damage), and since C-BT-03/04 are the same idea in opposite directions they now read as a matched
+pair. "equally" KEPT in the sharing items, same ruling as Component B's: it carries the mathematics.
+
+**Artefacts.** `contract/c-prompt-wording.json` regenerated (checksum `a576dd61...ee95f`). The
+backend suite then caught a THIRD artefact this touches: the prompt exemplars embed `prompt_text`,
+so `contract/c-prompt-exemplars.json` (checksum `a4318795...cae73`) and the frontend's generated
+mirror were regenerated too. All generated in the image, LF, 0 CR bytes verified.
+
+**A new guard, and three kinds of fallout it did not cover.** `ESL_BANNED_WORDS` added to
+`tests/test_c_prompt_wording_freeze.py`, mirroring Component B's list, plus a per-sentence
+nine-word bound; it caught two of this batch's own over-long sentences (C-MCL-03 at 11 words,
+C-MCL-04 at 10), both shortened. Separately, twelve existing tests failed, in three classes worth
+recording:
+  1. The exemplars artefact above.
+  2. FOUR negative-control tests went VACUOUS. Each altered a prompt by replacing its last
+     character with "?" -- but several new prompts now END in "?", so the "altered" string was
+     identical to the original and the control passed while testing nothing. That is precisely the
+     failure those controls exist to rule out, happening to them. They now swap the final character
+     for a genuinely different one.
+  3. Two tests named for a MECHANISM (C-EG-02 variant resolution, C-EG-01 exemplar integrity)
+     asserted literal copy, as did two on the backend side. All four now assert the mechanism; the
+     copy is pinned once, authoritatively, by the checksummed artefact rather than duplicated as
+     literals in four places.
+
+**A mistake worth recording.** The first rewrite used a regex over the wording literal; its
+non-greedy span crossed template boundaries and silently dropped 9 of the 30 templates. Caught by
+checking the template count against the original, restored from backup (verified zero diff), and
+redone as exact per-string replacement with a uniqueness assertion for each. Final diff: a clean
+31-for-31 swap, 30 templates intact.
+
+**The task card.** Owner instruction: Component C drew ONE big accent-bordered panel around the
+entire task -- exit control, family pill, level chip, question, manipulatives, answer controls and
+SUBMIT. That panel is no longer a card (it survives as the layout frame that owns the 90% height
+the content spacers are proportioned against and the relative positioning the floating chrome rows
+sit in; only border, ground and shadow are gone). In its place, `task-prompt-card.tsx` -- Component
+B's `promptCard` reproduced value-for-value -- now wraps the question and its items inside each
+archetype surface.
+
+ONE LINE DRAWN CONSISTENTLY ACROSS ALL EIGHT ARCHETYPES: inside the card goes what the child LOOKS
+AT (object set, payload tokens, number line, array); outside goes what they ACT ON (option rows,
+keypads, steppers, toggles) and SUBMIT. That is the same line Component B draws, and it is what
+makes the card mean "here is the question" rather than "here is the task". For `object-set-action`
+and `ordered-value-sequence` the manipulative IS the answer surface, so those cards hold the
+question alone. Two surfaces already wrapped exactly the right content in a `promptBlock`, so they
+take the card's exported style rather than gaining a component around JSX whose closing tag was
+ambiguous -- same card, defined once.
+
+**Verified.** Backend 711 passed, 0 failed, 76 skipped. Frontend `tsc --noEmit` clean, lint 0
+errors, 1381 contract + 21 render passed.
+
+Owner: Yasindu. Wording: CANDIDATE, not owner-reviewed and not reviewed by a Sinhala-speaking
+primary teacher. Component C has no Sinhala table yet -- the locale seam exists on the B side only.
+
+## 2026-09-28 (later) -- the big card restored with a shared gradient, and unplayable templates excluded at selection
+
+**The card, reversed back.** The Component C task panel removed earlier the same day is restored:
+accent border, warm ground, shadow. What survives from the removal is the inner card --
+`TaskPromptCard` in each archetype surface -- so the two components now nest identically: outer
+task panel, inner question card, answer controls on the panel's ground.
+
+**The gradient, shared rather than copied.** Component C's task screen now sits on the same slowly
+rotating wash Component B does. `RotatingGradientBackground` (plus `withAlpha` and the shared
+`GRADIENT_WASH_ALPHA`) was EXTRACTED from live-session-screen.tsx into
+`features/session/rotating-gradient-background.tsx` rather than reproduced. Component C's standing
+convention is to reproduce B's shapes rather than import private symbols, and that convention is
+right for styles -- but a 45-second rotation, an easing, and the diagonal-sizing trick (a square
+sized to the screen's diagonal, so a rotating gradient never sweeps its own corners into view)
+copied into a second file is a pair that drifts. Two screens that must look IDENTICAL share the
+component; two screens that merely rhyme keep their own styles. C re-picks two of the five
+game-type colours per task, always excluding that task's own family accent so the panel's border
+never blends into the background behind it. `gradientColors` is computed ABOVE the screen's five
+early returns because `useMemo` is a Hook -- the same constraint, and the same note, B carries.
+
+**Templates the app cannot draw are no longer served.** Owner instruction: a task with no
+renderable surface must not reach a child as "This one isn't ready" mid-game; reject it at
+selection and pick another.
+
+MEASURED, NOT ASSUMED. All 150 frozen exemplars (30 templates x 5 difficulty levels) were run
+through the app's own pure resolvers. Exactly three never render: `C-TC-02` (value-report refuses),
+`C-CC-04` (option-select refuses), and `C-SF-02` -- whose refusal is PERMANENT by the 2026-08-26
+ruling, because the template declares no bin-count payload key, so the number of groups IS the
+answer and no fixed-slot scene can show the bins without showing it. Two of the three refusals
+protect the answer; the app is not failing, it is declining to leak.
+
+`app/domain/live_engine_c/client_support.py` holds the three ids WITH a reason each, and
+`task_service` passes `selectable_template_ids(adapter.supported_template_ids())` to `select_task`.
+No retry loop is needed: a template outside the pool is simply never chosen. Order is preserved,
+because selection is seeded and deterministic and re-ordering would change which task a seed
+produces. Live pool verified: 30 -> 27.
+
+RECORDED AS A CLIENT-CAPABILITY CONSTRAINT, NOT A SCIENTIFIC ONE. Nothing here says those tasks are
+pedagogically wrong; it says the app has no screen for them. It does narrow the adaptive pool from
+30 to 27, which is a real effect on what a child meets, and that belongs in the record rather than
+in a silent denylist. Ship a surface and the entry goes away.
+
+**Drift guarded in both directions.** `frontend/.../c-unrenderable-templates.test.ts` runs every
+exemplar through the real resolvers and asserts the unrenderable set is EXACTLY those three, with a
+failure message naming the backend file to update -- so shipping a surface fails, and breaking a
+resolver fails. It also guards against a PARTIALLY renderable template (working at some difficulty
+levels and not others), which could neither be excluded nor served safely and would need an owner
+decision rather than a denylist entry. `tests/test_c_client_support.py` (6) asserts every excluded
+id is a real template, that the filter removes without rearranging, that it is idempotent, that the
+remaining pool clears a floor of 20, and that every entry states a reason.
+
+**Verified.** Backend 717 passed, 0 failed, 76 skipped. Frontend `tsc --noEmit` clean, lint 0
+errors, 1385 contract + 21 render passed. API restarted, live selectable pool 27 of 30.
+
+Owner: Yasindu.
+
+## 2026-10-10 -- Component C difficulty level: the chip is honest, the progression is not wired (gap recorded, not fixed)
+
+**The chip was showing the wrong axis.** The C game card's top-right "Lv N" pill was rendering
+`scaffold_state` -- the SUPPORT ladder, `C0`-`C4` -- which reads to a user as the game's level but
+is a different quantity entirely. It now renders the server's `difficulty_level`, which
+`09_API_AND_INTEGRATION_GUIDE.md` §2 explicitly marks "Displayed or ignored, never acted on". The
+scaffold level was not lost: it still appears in the wrong-answer feedback panel, where it belongs.
+
+NO DENOMINATOR, DELIBERATELY. The approved bundle declares no maximum difficulty -- it carries
+`familiarization_difficulty_level: 1`, `fallback_difficulty_level: 1` and caps of 2, and no
+catalogue template carries a difficulty field at all. "Lv 2 of 3" would be the client asserting a
+ceiling the governed configuration does not define, the same class of mistake as rendering a prior
+as evidence. If a ceiling is ever approved it belongs in the bundle and must be read from the
+server. `difficultyLevelLabel` fails to a MISSING chip for anything that is not a positive integer
+-- never a crash, never a raw value on screen. Locked by
+`frontend/src/api/__tests__/c-difficulty-level-chip.test.ts`.
+
+**A premise worth correcting in the record.** "Three levels per game type" is the CURRICULUM
+taxonomy (`L1`-`L3`), not this field. `07_GAME_CATALOGUE_AND_TASK_TEMPLATES.md`: "Curriculum level
+is not C difficulty level" -- Component C's own `1`-`5` "describes a calibrated configuration
+within a template". Separately, a `c_only` session takes `fallback_difficulty_level = 1` capped at
+2 (`06_ADAPTIVE_POLICY_SAFETY_AND_SCAFFOLDING.md` Part 1), and the app only ever opens `c_only`
+(`adventure-charge-context.tsx` hardcodes it). So even a fully wired progression would show Lv 1
+and Lv 2 here, never 3 to 5.
+
+**THE GAP: the difficulty decision is computed, persisted, and then never applied.** Recorded here
+rather than fixed, because it needs the Component C owner's ruling.
+
+MEASURED against the dev database, not inferred:
+
+| Table | Observation |
+| --- | --- |
+| `c_task_opportunities` | 112 rows, `initial_difficulty_level = 1` on every one |
+| `c_policy_decisions` | 37 rows `1 -> 1`; **35 rows `difficulty_before = 1 -> difficulty_after = 2`** |
+| `c_task_instances` | 112 rows, `difficulty_level = 1` on every one |
+
+The policy has decided "increase to 2" thirty-five times. No task has ever been built above 1.
+Three findings close the loop:
+
+1. `task_service.py:930,941` passes `current_difficulty_level=instance_record.difficulty_level`
+   into evidence -- which is always 1, because every instance is built at 1. The policy therefore
+   never observes a state other than "currently 1", and the most it can conclude is `1 -> 2`.
+2. Nothing reads `difficulty_after` back. It is written to `c_policy_decisions` (and to
+   `c_safety_event_records`) and consumed by no one.
+3. The engine's `selection.selector.select_task` takes NO current-difficulty parameter -- verified
+   by `inspect.signature` against the installed wheel, not read from a doc. The next task's level
+   is whatever `SelectionResult.initial_difficulty_level` says, which in `c_only` is the fallback.
+
+So this is not a wiring omission in `adapter.py`; the adapter already passes everything
+`select_task` accepts.
+
+NOT PRESENTED AS INTENDED BEHAVIOUR. `15_KNOWN_LIMITATIONS_AND_STATUS.md` does not list this as a
+limitation -- it lists the difficulty policy under VERIFIED / BUILT, and §10a asserts the opposite
+of fixed: the policy and scaffold ladder "are all real, running code -- but they adapt to what the
+child does within the current session only". The schema models application explicitly too:
+`c_policy_decisions` carries both `selected_action` AND `applied_action` ("proposed and applied
+difficulty action"), and `applied_action` means nothing if nothing applies it. This reads as an
+unclosed gap, not a deliberate design.
+
+**The candidate fix, and why it is not being taken unilaterally.** The engine does expose
+`component_c_generator.selection.selector.build_task_instance(template, seed_lineage, grade,
+difficulty_level, student_id, c_session_id, task_index, catalogue_version, config, ...)` with an
+explicit `difficulty_level: int` -- the same entry point `scaffolds.recovery` uses. Carrying the
+most recent `CPolicyDecisionRecord.difficulty_after` into that call, and persisting the level
+actually used on both `c_task_opportunities.initial_difficulty_level` and
+`c_task_instances.difficulty_level`, would close the loop without any arithmetic in app code: the
+safety controller has already produced `difficulty_after = clamp(target, floor, ceiling)` with the
+`c_only` cap applied.
+
+The governance gate is NOT the blocker. `assert_generation_config_permitted` refuses
+`TEST_FIXTURE_ONLY` / `SMOKE_ONLY` configs outside smoke mode, but the live config in `adapter.py`
+(233, 252, 302) is built with `_APPROVED_CODE_GATED_PARAMETER_SOURCE_STATUS`. Verified.
+
+What blocks it is scientific authority, which is not ours to assume. The docs never name a consumer
+for `difficulty_after`, and `06` leaves the step rule undefined -- it gives
+`difficulty_after = clamp(target, floor, ceiling)` and never defines `target`. Having the
+orchestration layer construct C tasks directly, at a level it selected, is the orchestration layer
+making an adaptive choice. This codebase refuses that everywhere else and it should refuse it here
+until the Component C owner rules.
+
+OWNER QUESTION, stated so it can be answered in one pass: should the next task be built at the most
+recent decision's `difficulty_after`, and should `current_difficulty_level` into
+`build_policy_evidence` be that carried value rather than the previous instance's level? If yes,
+what is `target` in the clamp?
+
+**Consequence, stated plainly.** Until that ruling lands the chip reads `Lv 1` for an entire
+session, every session. That is ACCURATE -- it genuinely is the task's difficulty -- but it does
+not move, and it should not be described as adaptive difficulty in a demo.
+
+**Verified.** Frontend 1473 contract tests passed, 0 failed. Backend 717 passed, 0 failed, 76
+skipped (unchanged -- this entry adds documentation and one pointer comment, no behaviour). Engine
+signature and parameter-source status both confirmed by introspection against the installed wheel.
+
+Owner: Yasindu.
+
+## 2026-10-10 (later) -- Component C difficulty progression WIRED: the decision is now applied to the next task
+
+Closes the gap the entry above recorded. Owner instruction: start the dedicated backend
+progression task, keep the UI data-driven, do not fake level changes, and do not implement an
+arbitrary escalation formula in `task_service.py`.
+
+**What changed, in one sentence.** `next_task` now builds the task at the most recently persisted
+`CPolicyDecisionRecord.difficulty_after` instead of always at `select_task`'s own
+`initial_difficulty_level`.
+
+NO FORMULA WAS ADDED, and that is the point. The engine already bounds its own output -- its
+hard-safety controller step ends in `difficulty_after = max(floor, min(ceiling, target))`, with the
+`c_only` ceiling applied from `selection_config.fallback_difficulty_cap` (VERIFIED by reading the
+installed wheel's source, not the docs). This batch carries that integer and computes nothing.
+Stepping, flooring or capping in app code would be the orchestration layer implementing adaptive
+science, which this codebase refuses everywhere else.
+
+PRECEDENT, NOT A NEW PATHWAY. `CPolicyDecisionRecordRepository.most_recent_for_session` already
+existed and its own docstring already establishes that the most recently written decision is what
+feeds the NEXT task -- `increase_block_remaining` has been read exactly this way since Phase 6b.
+This adds a second field to that same established read. Construction goes through
+`LiveEngineCAdapter.build_task_instance(..., difficulty_level=...)`, the governed entry point the
+recovery path already uses -- same template, same skill, same seed lineage `select_task` chose,
+only the difficulty differs. The frozen instance the engine returned is never mutated.
+
+**Why two causes had to be fixed by one change.** The circle was closed in both directions: the
+policy's evidence reads the PREVIOUS INSTANCE's level (`current_difficulty_level=
+instance_record.difficulty_level`), so while every instance was built at 1 the policy could only
+ever observe "currently 1" and could only ever conclude `1 -> 2`. Persisting the carried level on
+the instance fixes the evidence input as a consequence -- no second edit was needed at the
+evidence call site, and none was made.
+
+**A validity guard that REJECTS rather than clamps.** `difficulty_level` carries no database CHECK
+of its own, while the policy evidence's own `current_difficulty_level` is annotated `Le(5)` -- so an
+out-of-domain level would persist cleanly here and then fail LATER, on the child's next submission,
+as a validation error. An out-of-domain carried value is therefore discarded in favour of the level
+the engine just selected. Clamping it would silently manufacture a level no policy chose;
+discarding falls back to a value the engine DID choose. `_ENGINE_DIFFICULTY_MIN/MAX` are the
+engine's own annotations (`Ge(1), Le(5)` on both its selection result and its evidence model), and
+a test reads them off the installed wheel so they cannot drift from production silently.
+
+**Fail-safe on construction.** If a template cannot be built at the carried level the child keeps
+the task the engine already produced rather than meeting an error -- and the rows then record the
+level ACTUALLY served, never the one intended, so the audit trail stays honest about what the child
+met. Expected never to fire (all 30 templates are frozen at all five levels -- the 150-exemplar
+sweep in the 2026-09-28 entry). Both exceptions the adapter can raise here,
+`UnsupportedTemplateError` and `TaskGenerationTechnicalError`, were CONFIRMED to be
+`LiveEngineCError` subclasses by introspection, so the fallback genuinely covers both paths rather
+than appearing to.
+
+**Tests: `tests/test_c_difficulty_progression.py` (4).** The behavioural one drives the real path --
+a real session, a real `next_task`, a real terminal event stream so the resume-instead-of-mint path
+correctly finds nothing to resume, and a real persisted decision row -- and asserts the second task
+is BUILT at the carried level, with the opportunity row, the instance row and the response all
+agreeing. PROVEN TO BE A REAL TRIPWIRE, not merely passing: the carry was disabled and the test was
+confirmed to FAIL, then restored. The structural test enforces the owner constraint (no arithmetic
+or clamping applied to a difficulty expression) and cannot pass by the feature having been deleted
+-- it also asserts the carry is still present. It strips whole-line comments before matching,
+because the comments in that method legitimately discuss clamping in order to rule it out.
+
+**C-17's GUARD FIRED DURING THIS BATCH, AND IT WAS RIGHT.** The first full run came back
+`1 failed, 720 passed`:
+`test_c17_3_initial_difficulty_path_does_not_consume_prior_session_end_state` asserts
+`apply_safety` and the policy's observable-evidence type appear NOWHERE in this module -- not even
+in prose -- and the new explanatory comments had spelled both. The module already carried a note
+saying an identifier was "deliberately not spelled out here so this in-line comment does not itself
+trip" that check; the convention was documented and not followed. Both comments now describe those
+things instead of naming them, with the reason recorded inline so the next person does not
+rediscover it. No behaviour was involved -- this was comment text only -- but the earlier
+"guards clear" check had been taken BEFORE the validity guard was written, so it did not cover
+them. Recorded because a guard that fires and gets quietly worked around is worth less than one
+whose firing is written down.
+
+**Verified.** Backend **721 passed, 0 failed, 76 skipped** (717 baseline + 4 new) against the
+isolated `upadya_test` database. Frontend untouched: no file changed, and its 1473 contract tests
+were already green, including the chip's own `c-difficulty-level-chip.test.ts`.
+
+A NOTE ON THE TEST INVOCATION, because it invalidated a run in this batch: `api-test` declares no
+volumes and runs the baked `upadya-backend:be1-batch3` image, so `docker compose build api` is not
+optional -- a suite run without it tests the previous code while looking entirely normal. The
+compose file says this; it is repeated here because the failure mode is silent. Separately, the
+`db` service had been `Exited` for 15 hours at the start of this batch, and because the canonical
+command passes `--no-deps`, nothing started it: the suite ran with no database and produced
+hundreds of connection failures that looked like real test failures.
+
+**STILL NOT VERIFIED, and not claimed:** the live end-to-end. Nobody has yet played a `c_only`
+session through the running API until the policy escalates and confirmed a `c_task_instances` row
+appears at level 2, where all 112 existing rows are level 1. The tests prove the mechanism; they do
+not prove the running deployment. The dev API container was deliberately NOT rebuilt or restarted
+for this check, because doing that mid-session previously broke a question a child-facing screen
+was in the middle of (the "Time's up" incident, 2026-10-10).
+
+**Scope note.** `c_only` sessions remain capped at 2 by the approved bundle, so this makes the chip
+read Lv 1 -> Lv 2 and nothing higher. Reaching 3-5 needs `combined` mode and a real B->C mastery
+feed, which is a separate piece of work: `15` §10a records that mastery is currently a fixed
+constant, so deriving a level from it today would be a fabricated difficulty wearing a real one's
+clothes.
+
+**Owner question from the entry above is NOT resolved by this batch and still stands:** the docs
+name no consumer for `difficulty_after`, and `06` never defines `target` in its clamp. This batch
+implements the reading that the schema's own `applied_action` column implies and that
+`most_recent_for_session` already set a precedent for. If the Component C owner rules differently,
+the change is one function's worth of code to revise and the tests name exactly what would have to
+change.
+
+Owner: Yasindu.
+
+
+---
+
+## 2026-10-20 — LIVE-01: the frozen Q-learning policy replaces the rule policy in production
+
+**What changed.** Component C's live difficulty decision is now proposed by the FROZEN, trained Q-learning policy
+(RL notebooks NB02/NB04, `component_c_rl/`); the pinned safety controller still disposes. `PRODUCTION_POLICY_MODE` is
+`"frozen_q_evaluation"` (was `"rule_based_baseline"`). The rule policy no longer decides anything in production; its
+code path (`decide_adaptation_with_safety_flags`) is untouched and still tested.
+
+**Approval (as reported).** Prabathi (Component C owner), reported by Yasindu, 2026-10-20 — recorded in
+`provenance/component-c-q-policy-approval.json`. `evidence_reference` is `"TO BE SUPPLIED BY YASINDU"`; no forum or
+document name was invented.
+
+**Decisions applied as given.** Frozen only (no per-child learning; `internal_reward` stays NULL). Fail closed: a missing
+or hash-mismatched table raises `QPolicyArtifactError` and the session refuses at start — there is no fallback to the rule.
+No DB migration (`frozen_q_evaluation` was already allowed by the `c_policy_decisions` CHECK and by `PolicyMode`). No
+frontend change. The c_only difficulty cap of 2 (approved bundle) is unchanged.
+
+**Files.**
+- `provenance/c_policy/` — `q_c_only.json`, `q_main.json`, `golden_vectors.json`, `MANIFEST.json` (sha256 of every
+  file), `.gitattributes` (`* -text`, so line-ending conversion cannot change a hash). Produced by
+  `component_c_rl/notebooks/NB04_live_policy_export.ipynb`. `Dockerfile` copies the directory; `.dockerignore` re-includes it.
+- `app/application/live_engine_c/q_policy.py` (new; imports nothing from `component_c_generator`): `load_q_policy`
+  (sha256-verified, cached after the first load), `state_of` (same buckets as `rl_core.agent`, plus mastery bucket 3 =
+  unknown for c_only), `QPolicy.propose`.
+- `app/infrastructure/live_engine_c/adapter.py` (still the ONLY importer of the generator): `preview_allowed_actions`,
+  `decide_with_proposed_action`, `safety_controller_version`; ports declared in `app/domain/live_engine_c/ports.py`.
+- `adaptation_service.decide_and_persist_adaptation`: optional `proposed_action / policy_version / rl_state`; without them it
+  takes the unchanged rule path.
+- `task_service.submit_action`: builds the Q observation from persisted data (first-try = mean `first_attempt_correct` over
+  the last 5 summaries, 0.5 if none; strain = `rolling_strain_score`; mastery = the selected skill's fixture mastery for
+  combined, `None` for c_only; tasks_done = number of summaries), previews the allowed actions, proposes, then
+  `decide_with_proposed_action`. `policy_version = "c-rl-q-v1+<SAFETY_CONTROLLER_VERSION>"`; `rl_state` JSONB holds
+  `{state, q_values, allowed, artifact_file, artifact_sha256}`.
+- `c_session_service.create` loads the table before any session row exists, so a bad artifact refuses the session up front.
+
+**Gate membership.** The Q policy is a new config consumer and was NOT covered by the session-start gate (the existing
+`policy_config` family gates the rule thresholds only). It is now wired in the same way as the other code-gated families:
+`create_session` gained a required `q_policy_parameter_source_status` argument and calls
+`assert_code_gated_family_usable(family_name="q_policy_config", ...)`; the status comes from the hash-verified
+`MANIFEST.json` (`APPROVED_FOR_PROVISIONAL_IMPLEMENTATION`, the same status the other code-gated families carry). A seam
+(`assert_q_policy_matches_session_gate`) re-checks at `submit_action` that the loaded artifact's status equals the
+session-gated one, mirroring `assert_policy_config_matches_session_gate`.
+
+**Equivalence proof.** `decide_with_proposed_action` composes the `AdaptationDecision` itself because the pinned
+`decide_adaptation` raises `QLearningDisabledError` for Q modes. `tests/test_live01_q_adapter.py` proves that for the same
+applied action the composed decision equals the pinned rule path field-for-field (decision_id, applied/overridden/reason,
+difficulty_after, strain bucket, increase block, session-start bucket, seed lineage) and the two safety flags match — except
+`policy_mode`, `policy_version`, `rl_state` — over 11 evidence cases; that safety still wins whatever Q proposes (checked
+against an independent call of the pinned `apply_safety`); and that Q never leaves the allowed set.
+
+**Tests.** Baseline before any change (full suite, rebuilt image, db running): 2 failed, 720 passed, 76 skipped — both
+failures are in `tests/test_be4f_transactional_sweep.py` (Component B, `'RESPONSE' == 'TIMEOUT'`), present before this
+change and untouched. After: 2 failed (the same two), 796 passed, 76 skipped. New: `tests/test_live01_q_policy.py`,
+`tests/test_live01_q_adapter.py` (76 tests incl. golden vectors, fail-closed, HTTP session refusal, gate, E2E).
+Existing tests changed deliberately: `test_c4_session_lifecycle.py`, `test_c5_task_serve_and_evaluate.py`,
+`test_c7_scaffolds_and_rewards.py` (+ `test_c6b_policy_and_safety.py` helper): pass the new required
+`q_policy_parameter_source_status` to `create_session`; `test_batch3_safety_forces_recovery_column.py::
+test_correct_answer_persists_the_real_safety_forces_recovery_flag`: its spy moved from the rule-path method to
+`decide_with_proposed_action`, the method production now calls. `test_c6b` ~L703 / ~L1022 needed no change — they test the
+adapter's pinned `decide_adaptation`, which still refuses Q modes.
+
+**Known limits (not fixed here).**
+- c_only is capped at level 2 by the approved bundle, so live Q chooses only between levels 1 and 2 until combined mode
+  with real B->C mastery exists. In simulation c_only leaves little room: greedy Q vs rule +0.0125 reward, +0.0345
+  first-try, −0.038 safety events; there is no mastery growth or boredom dropout in c_only.
+- Adaptation still runs only after a correct completion (`task_service.py`, the `is_correct` branch); in training Q decided
+  after every task. The first Q decisions of a session are forced holds (`min_tasks = 3`), so with correct-only adaptation
+  Q starts choosing once the session has 3 task summaries (tasks_done >= 3).
+- B mastery in combined mode is still the fixed fixture (`mastery_fixture.py`).
+- In the training simulation a forced hold (tasks_done < 3) is returned even if `hold` is not in the allowed set and safety
+  then disposes; `QPolicy.propose` keeps that behaviour so it matches the golden vectors.
+- The live container was not rebuilt or restarted (see the 2026-10-10 "Time's up" entry); a running dev API must be rebuilt
+  to pick this up.
+
+Owner: Yasindu.
+
+
+---
+
+## 2026-10-20 — LIVE-02: c_only oscillation fixed by retraining (q_c_only_v2)
+
+**Problem (live database after LIVE-01).** The c_only Q table bounced between levels for a child who succeeds:
+state `1,2,0,3` -> increase (1->2), state `2,2,0,3` -> decrease (2->1). Diagnosis from the table: Q(2,2,0,3) =
+[2.714, 2.076, 0] (decrease beat hold by 0.637), Q(1,2,0,3) = [0, 2.306, 3.126]; 179k / 251k visits, i.e. converged values.
+
+**Fix: training, not a hand-written rule.** In the simulator (`component_c_rl/rl_core/env.py`) boredom dropout was
+combined-only, so staying at a level the child masters was never costed in c_only. It now also runs in c_only on the
+learner's LATENT mastery (policy still sees mastery unknown); growth stays combined-only; DROP_A/B/C, reward weights, tau,
+state buckets, the safety controller and `q_main.json` are unchanged. Combined mode is pinned identical by a digest test. Rule
+c_only early-end rate with the change: 14.8%. Retrained with the NB04 settings (3,000 x 25, seed base 50,000, 16.0 min).
+Offline result (100 new c_only learners x 10 sessions, seeds 9,400,000+): v2 greedy at (2,2,0,3) = hold; flip rate (decisions that
+reverse the previous move) 0.747 (v1) -> 0.162 (v2), rule 0.003; level-2 share when first-try is high and strain low 0.49 -> 0.83
+(rule 0.89); reward v1 0.5071 / v2 0.5014 / rule 0.4973. Gate passed. v2 is NOT oscillation-free: about half of its moves still
+reverse the previous move.
+
+**Shipped.** `provenance/c_policy/q_c_only_v2.json` (sha256 `5893e91f8917cdabc72a5a9b737c93267f9a55b1b4acbea03353b491218f0e6b`,
+`artifact_version: "v2"`). `MANIFEST.json`: `q_c_only` -> v2; the v1 entry is kept as `q_c_only_v1` with
+`superseded_by: "q_c_only_v2.json"` and its file stays on disk (audit trail; no fallback to it); `q_main` untouched. Golden vectors
+regenerated for c_only (new sha256 `79df790f5ca21e1712f13922786e046d782e193fe6fabf9a85ee5d817ccaff1b`), combined rows
+byte-identical. No backend logic change: `load_q_policy("c_only")` resolves v2 through the manifest, so `rl_state.artifact_file /
+artifact_sha256` now show v2. `policy_version` stays `c-rl-q-v1+<safety version>` (the policy family); the artifact version
+is in `rl_state` and the manifest.
+
+**Tests.** New `tests/test_live02_c_only_v2.py`: manifest points c_only at v2 and keeps v1 as superseded; the greedy action at
+`2,2,0,3` is not decrease; v1 file kept only as the audit record; a tampered v2 fails closed (and there is no fallback to v1);
+backend E2E through `TaskService.submit_action`, every answer correct, 8 tasks: difficulty sequence **[1, 1, 1, 2, 2, 2, 2, 2]**
+(decisions: hold, hold, increase, then hold x5) — no alternation. `tests/test_live01_q_policy.py` updated for the v2 file name.
+Full suite after `docker compose build api` (db running): 2 failed, 801 passed, 76 skipped; the 2 failures are the same
+Component B `test_be4f_transactional_sweep` ones present before LIVE-01 (LIVE-01 result: 2 failed, 796 passed, 76 skipped).
+
+**Not done / not claimed.** The running dev API was NOT restarted or rebuilt — it still serves v1 until the Lead restarts it.
+The live database was not touched by the tests (they use `studentapp_test`).
+
+Owner: Yasindu.
+
+
+---
+
+## 2026-10-20 — PERF-01: fewer database round trips on Component C submit / next_task
+
+**Problem.** Against the remote dev database (~50 ms per round trip) submit took 1-3 s and next_task 1-1.6 s: the cost was the
+number of sequential statements, not computation. Goal: fewer round trips with IDENTICAL behaviour (same rows, same
+responses, same errors, same commit boundaries).
+
+**Measured first.** `tests/perf_helpers.py` (statement counter via `before_cursor_execute`, origin = the calling app/ frame,
+optional real sleep per statement) and `tests/perf_scenario.py` (a scripted c_only session through the real services: 8
+tasks, odd tasks a wrong answer then correct, even tasks correct first time; each call in its own session + commit like the
+routes). `tests/test_perf01_submit_benchmark.py` (`PERF=1`, `PERF_LATENCY_MS=50` to really sleep).
+Statements per call (BEGIN/COMMIT not counted), simulated at 50 ms each:
+
+| call | BEFORE | AFTER |
+|---|---|---|
+| submit, correct answer | 24 (min 24, max 25) = 1,225 ms | **11 = 550 ms** (-54 %) |
+| submit, wrong answer | 14 = 700 ms | **6 = 300 ms** (-57 %) |
+| next_task | 11 (10-11) = 550 ms | **9 = 450 ms** (-18 %) |
+
+Run with a real 50 ms sleep per statement the correct submit measured 606 ms wall (550 ms of sleeping plus ~55 ms of local
+CPU and profiler overhead); the simulated figure at 50 ms/statement is 550 ms. The baseline's biggest origins were
+`repositories.py:34` (every `add` = one INSERT round trip, 5.5 per correct submit), four separate counting queries over
+`c_gameplay_events` for the same instance, the session history read twice (3 queries each time:
+`telemetry_validation.py:297-299`), a repeat event-stream read by summary derivation and by the scaffold step, a separate
+instance lock, a separate user lookup and session read.
+
+**Changes (what each removed).**
+- `repositories.py` `CSessionRecordRepository.get_owned_for_subject` (new): user -> learner link -> owned session in ONE query
+  (was the user/link query + session read; the three not-found cases already were one `ResourceNotFoundError`). Used by
+  `submit_action` and `next_task`. -1 (submit), -2 (next_task, with the lock below).
+- `next_task`: `get_owned_for_subject(..., for_update=True)` takes the same session-row lock in the same query (was a separate
+  `SELECT ... FOR UPDATE`; now taken before the state check, which only matters for a request about to be refused).
+- `CTaskInstanceRecordRepository.get_owned(..., for_update=True)`: reads AND locks the instance row (was a read, then
+  `lock_for_update`). The lock is the same row lock, now taken before the terminal / validation checks instead of after them;
+  sequential behaviour is identical, a concurrent duplicate waits one step earlier. -1.
+- `submit_action`: ONE `list_ordered_for_instance` read replaces four queries (terminal check, max index / timestamp,
+  answer_submitted count, started check); all four values are derived from it in Python under the instance lock. -3.
+- `submit_action`: the started / submitted / evaluated (and, for a correct answer, terminal) events are queued and inserted in
+  ONE statement (was one INSERT each). The terminal event is built by `write_completed_correct_terminal_event` (new optional
+  `known_max_index / known_max_timestamp / known_not_terminal / defer_flush`; defaults keep the old behaviour and the old
+  tests) and added AFTER the answer events (insert order = add order, which the Phase 3b consecutive-event_index trigger
+  needs). The unique-terminal-index backstop (T1-3) is translated to the same `ConflictError` around that one flush. -2 (wrong),
+  -4 (correct, with the two terminal-event re-reads).
+- `derive_and_persist_summary(records=...)` and `decide_and_persist_scaffold_level(events=...)` (new optional): reuse the
+  stream `submit_action` already holds (its events plus the ones it just wrote) instead of re-reading it. -1 each.
+- `build_evidence_for_session(history_records=...)` (new optional) and `submit_action`: the session's derivable history is read
+  ONCE (through the same guarded `get_derivable_history_for_session`) and shared by the evidence builder and the Q observation
+  (it was read twice). -3.
+- `bundle_resolution.resolve_c_bundle_and_catalogue`: per-process cache (below); `next_task` reuses the catalogue that
+  resolution already loaded instead of parsing it a second time. Local CPU for next_task 193 ms -> 90 ms.
+
+**Caching.** Cached per process: the result of a SUCCESSFUL `resolve_c_bundle_and_catalogue` (runtime-bundle schema validation,
+every artifact checksum incl. the catalogue's, catalogue parse + checksum), keyed by the arguments and by each input file's
+(path, size, mtime). The first call after start-up does the full validation; a file that changes or goes missing is
+re-validated from scratch on the next call (stricter than "hash once"); a failure is never cached. The Q policy manifest and
+tables were already cached after the first sha256-verified load (LIVE-01): a tampered file present at start-up still raises
+`QPolicyArtifactError` and the session refuses (existing tamper tests unchanged and passing). The per-request gates are all
+still evaluated (`assert_generation_config_permitted`, the policy seam, the Q-policy status seam). The next_task comment that
+says the bundle resolution on the resume path "must not be optimized away" is honoured in intent: the resolution still runs on
+every call, it is now served from the validated cache unless a file changed.
+
+**Proof nothing changed.** `tests/fixtures/perf01_golden_session.json` was captured from the code BEFORE any change
+(`PERF_CAPTURE=1`; two further pre-change runs reproduced it) and `tests/test_perf01_row_equivalence.py` compares the same
+scripted session after the change: every row of every c_* table the session writes (c_task_opportunities, c_task_instances,
+c_gameplay_events 48 rows, c_task_opportunity_summaries, c_policy_decisions, c_safety_events, c_scaffold_events,
+c_task_opportunity_verdicts; UUID / timestamp / request-id columns excluded, UUIDs inside values renumbered) and all 20 API
+response bodies are identical. `tests/test_perf01_round_trips.py` keeps a statement budget per call type (<= 12 / 7 / 10) and
+tests the cache (same object on a hit, tampered catalogue fails closed, failures not cached). Full suite after
+`docker compose build api` (db running): 2 failed, 805 passed, 78 skipped; the 2 failures are the same Component B
+`test_be4f_transactional_sweep` ones present before LIVE-01 (LIVE-02 result: 2 failed, 801 passed, 76 skipped; the added
+tests are the 4 new PERF-01 tests that run by default plus 2 perf-marked ones skipped without `PERF=1`).
+
+**Remaining hotspots (left deliberately).** Correct submit (11): user+session join, instance read+lock, event stream, ONE INSERT
+for the events, INSERT summary, learner local state, the guarded history (opportunities, summaries, verdicts = 3 reads that the
+telemetry validator needs), latest decision, INSERT decision. Different tables cannot share an INSERT; the 3-read history is
+the validated accessor (J1-2/J1-4) and was left alone; the user lookup is the authorization step. Not measured here: the JWT /
+JWKS verification, connection acquisition and BEGIN / COMMIT, which are per request outside these services. The running dev API
+was NOT restarted or rebuilt; it needs a rebuild to pick this up.
+
+Owner: Yasindu.
+
+## 2026-10-20 — The session results screen now shows per-skill mastery bars (owner decision, reversing a recorded rule)
+
+**This reverses a rule, deliberately, and the reversal is the entry.** `live-session-logic.ts`'s
+`resultsView` stated that the results surface carries "no score, no percentage, no stars, no
+streak, no per-skill breakdown, no mastery figure", and that "a child who got everything wrong and
+a child who got everything right see the identical screen, by design". It went further: the
+function takes an `outcomeHistory` parameter it never reads, with a comment saying the parameter
+exists SO THAT ignoring it is testable, and a note ending "If you are here to 'fix' the missing
+score, this comment is the answer: it is not missing."
+
+The owner has ruled that the screen may show what moved. The two costs below were put to them
+before the work started and accepted.
+
+**WHAT WAS KEPT.** The reversal is narrower than it looks, and the narrowing is enforced:
+
+* `resultsView`'s own guarantee is UNCHANGED and still tested -- the COPY (headline and detail) is
+  byte-identical for every possible outcome history, carries no score, and still never reads
+  `outcomeHistory` (`session-results.test.ts`).
+* The bars are drawn from the SERVER's own `p_l` values (`GET /b/learner/skill-states`), never from
+  the `response_matched` values this client happened to observe. That distinction is what keeps the
+  original objection intact: the client is not synthesising a summary that was withheld, it is
+  rendering one the server already serves to the Play prep card under its own 2026-09-21 ruling.
+* No number is printed and none is announced. The bar's length is the whole message; a test asserts
+  no `accessibilityValue`, no percentage text, and no formatted number in the component.
+
+**TWO PROTECTIONS, because the audience is seven.**
+
+* A BAR NEVER SHRINKS. BKT lowers `p_l` on a wrong first attempt, and a bar visibly shrinking at
+  the end of a session is exactly the "you did badly" message the original rule existed to prevent.
+  A fall is clamped to flat and is never flagged as improvement. The stored value is untouched;
+  only the drawing is.
+* NO SNAPSHOT MEANS NO MOVEMENT. The server has no "before" to give -- the endpoint returns current
+  `p_l` only -- so the starting state is photographed client-side at session start. A reload
+  mid-session, a direct link, or a session begun before this shipped leaves nothing to compare, and
+  the screen then draws current mastery with no movement. Rendering `before: 0` instead would sweep
+  every bar from nothing to everything and invent a result.
+
+**THE SNAPSHOT IS IN MEMORY, KEYED BY SESSION, AND NEVER PERSISTED.** Three reasons, each
+load-bearing: a snapshot is meaningless outside its own session; this app runs on shared classroom
+devices and one child's mastery must never be drawn against another's (the rule
+`home-session-state-cache.ts` already follows); and the results screen is documented as not
+surviving a reload, which persisting would quietly undo. First write wins, so a remount or a
+crash-recovery resume cannot re-baseline the snapshot to a mid-session state and erase the child's
+own progress from the screen.
+
+**TWO KNOWN COSTS, accepted rather than solved.**
+
+1. **The bars are driven by TEST_FIXTURE_ONLY parameters.** `p_l0=0.2, p_t=0.15, p_g=0.2, p_s=0.1`
+   saturate `p_l` toward 1.0 after roughly four or five correct answers. After a five-question
+   session the bars move dramatically -- because the parameters are uncalibrated placeholders, not
+   because the child learned that much. The movement a child sees is partly an artefact.
+2. **A child who did not progress watches their bars stay still.** The clamp stops a bar falling,
+   but it cannot manufacture growth. This is the case the original rule was written to avoid, and
+   it is now reachable.
+
+**Navigation changed with it (owner request).** Home is an icon in the top-left; the primary
+action at the bottom is PLAY AGAIN, routing to preparation. Leaving is still one tap away but is
+no longer what the screen offers.
+
+**A FOURTH ARTEFACT EMBEDS THE PROMPT WORDING, found by the frontend suite.** Changing Component C
+wording earlier the same day required regenerating `c-prompt-wording.json`,
+`c-prompt-exemplars.json` and the `perf01` golden -- and then the frontend's own generated
+`src/api/generated/c-prompt-exemplars.ts`, which cross-checks against the backend artefact
+(`npm run generate:c-prompt-exemplars`). Targeted backend runs passed while this was stale. A
+wording change touches FOUR generated files, not one; the cross-check test is what catches it.
+
+**Verified.** Frontend 1516 contract + 22 render passed, 0 failed; `tsc` clean; lint 0 errors.
+Nine new tests cover the pure comparison logic and three structural guards (no printed number, the
+width rule shared with the prep card rather than re-derived, and the snapshot never persisted).
+
+**NOT VERIFIED, and not claimed:** nobody has yet played a session end-to-end and watched the bars
+animate. The logic is tested; the animation is not.
+
+Owner: Yasindu.

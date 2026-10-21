@@ -17,10 +17,31 @@ const ARTWORK_POSITIONS = 5; // what the illustration provides, not a session le
 
 // --- node state derivation ------------------------------------------------------------------------
 
-test('no active session leaves every node pending, with no current node', () => {
+test('no active session still offers a way in: node 1 is current, the rest pending', () => {
+  // This asserted all-pending until 2026-09-28, which left a child with no session -- the state
+  // the panel resets to the moment they FINISH one -- looking at five inert circles with no play
+  // control anywhere on the path. `current` is the only state the panel draws a play button for
+  // and the only one it makes pressable, so all-pending was a dead end that forced a scroll back
+  // up to the hero. Question 1 is genuinely what this learner plays next, so saying so is honest.
   const states = derivePathNodeStates({ kind: 'not-in-progress' }, ARTWORK_POSITIONS);
-  assert.deepEqual(states, ['pending', 'pending', 'pending', 'pending', 'pending']);
-  assert.equal(states.includes('current'), false);
+  assert.deepEqual(states, ['current', 'pending', 'pending', 'pending', 'pending']);
+});
+
+test('exactly one node is ever current, in every state', () => {
+  // The play control is singular by construction: two current nodes would draw two play buttons
+  // and leave the child choosing between them.
+  const cases = [
+    derivePathNodeStates({ kind: 'not-in-progress' }, ARTWORK_POSITIONS),
+    derivePathNodeStates({ kind: 'in-progress', sessionId: 's', completed: 0, totalBound: 5 }, ARTWORK_POSITIONS),
+    derivePathNodeStates({ kind: 'in-progress', sessionId: 's', completed: 3, totalBound: 5 }, ARTWORK_POSITIONS),
+  ];
+  for (const states of cases) {
+    assert.equal(states.filter((node) => node === 'current').length, 1, JSON.stringify(states));
+  }
+});
+
+test('a not-in-progress path with no artwork positions draws nothing rather than inventing a node', () => {
+  assert.deepEqual(derivePathNodeStates({ kind: 'not-in-progress' }, 0), []);
 });
 
 test('completed N marks the first N done and the next current', () => {

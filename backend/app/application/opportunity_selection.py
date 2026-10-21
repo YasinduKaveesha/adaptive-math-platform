@@ -54,6 +54,7 @@ from app.domain.b_opportunity import (
     project_task_instance_to_presentation,
 )
 from app.domain.live_engine.errors import LiveEngineError
+from app.domain.live_engine.locales import DEFAULT_LOCALE, Locale
 from app.domain.live_engine.types import (
     BktConfig,
     Catalogue,
@@ -69,7 +70,6 @@ from app.domain.runtime_bundle.errors import RuntimeBundleError
 from app.domain.runtime_bundle.readiness import assert_catalogue_matches_bundle
 from app.infrastructure.persistence_models import AppUser, LearnerSkillStateRecord
 from app.infrastructure.repositories import (
-    AppUserLearnerLinkRepository,
     AppUserRepository,
     ItemOpportunityRepository,
     LearnerRepository,
@@ -182,7 +182,7 @@ def provenance(user_id: UUID, request_id: str, operation: str, resource_type: st
         "resource_type": resource_type,
         "resource_id": resource_id,
         "source_class": "TEST",
-        "source_system": "upadya-api",
+        "source_system": "studentapp-api",
         "environment": "live-endpoint",
         "schema_revision": SCHEMA_REVISION,
     }
@@ -342,6 +342,7 @@ async def load_or_init_skill_states(
 
 async def open_adaptive_opportunity(
     *,
+    locale: Locale = DEFAULT_LOCALE,
     session: AsyncSession,
     adapter: LiveEngineAdapter,
     catalogue: Catalogue,
@@ -452,12 +453,14 @@ async def open_adaptive_opportunity(
         task_instance_record,
         presentation_token=raw_token,
         server_timeout_deadline_utc=opportunity.timeout_deadline_utc,
+        locale=locale,
     )
     return opportunity_presentation_fields(presented)
 
 
 async def reissue_presentation_for_open_opportunity(
     *,
+    locale: Locale = DEFAULT_LOCALE,
     session: AsyncSession,
     session_id: UUID,
     learner_id: UUID,
@@ -489,6 +492,7 @@ async def reissue_presentation_for_open_opportunity(
         task_instance_record,
         presentation_token=raw_token,
         server_timeout_deadline_utc=open_opportunity.timeout_deadline_utc,
+        locale=locale,
     )
     return opportunity_presentation_fields(presented)
 
@@ -502,18 +506,22 @@ class OpportunitySelectionService:
         self._uow_factory = uow_factory
 
     async def _require_learner(self, session: AsyncSession, principal: AuthenticatedPrincipal) -> tuple[AppUser, UUID]:
-        user = await AppUserRepository(session).find_by_subject(principal.user_id)
-        if user is None:
+        found = await AppUserRepository(session).find_with_learner_link_by_subject(principal.user_id)
+        if found is None:
             raise ResourceNotFoundError()
+        user, link = found
         if user.profile_type != "LEARNER":
             raise ForbiddenError()
-        link = await AppUserLearnerLinkRepository(session).find_by_user(user.user_id)
         if link is None:
             raise ResourceNotFoundError()
         return user, link.learner_id
 
     async def select_next_opportunity(
-        self, principal: AuthenticatedPrincipal, session_id: UUID, request_id: str
+        self,
+        principal: AuthenticatedPrincipal,
+        session_id: UUID,
+        request_id: str,
+        locale: Locale = DEFAULT_LOCALE,
     ) -> OpportunityPresentationResponse:
         async with self._uow_factory() as uow:
             user, learner_id = await self._require_learner(uow.session, principal)
@@ -536,6 +544,7 @@ class OpportunitySelectionService:
             existing_open = await ItemOpportunityRepository(uow.session).find_open_for_session(session_id)
             if existing_open is not None:
                 fields = await reissue_presentation_for_open_opportunity(
+                    locale=locale,
                     session=uow.session,
                     session_id=session_id,
                     learner_id=learner_id,
@@ -570,6 +579,7 @@ class OpportunitySelectionService:
             opportunity_index = existing_count + 1
 
             fields = await open_adaptive_opportunity(
+                locale=locale,
                 session=uow.session,
                 adapter=adapter,
                 catalogue=catalogue,

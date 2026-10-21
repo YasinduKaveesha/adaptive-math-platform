@@ -1,4 +1,4 @@
-import { requestJson } from '@/src/api/client';
+import { requestJson } from '@/src/api/request';
 import { ApiClientError } from '@/src/api/errors';
 import { loadFixtureTaskExemplar } from '@/src/api/dev-fixture-exemplars';
 import {

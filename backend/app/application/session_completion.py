@@ -95,7 +95,6 @@ from app.infrastructure.persistence_models import (
     SkillCertificationResultRecord,
 )
 from app.infrastructure.repositories import (
-    AppUserLearnerLinkRepository,
     AppUserRepository,
     AttemptRepository,
     HintEventRepository,
@@ -145,7 +144,7 @@ def provenance(user_id: UUID, request_id: str, operation: str, resource_type: st
         "resource_type": resource_type,
         "resource_id": resource_id,
         "source_class": "TEST",
-        "source_system": "upadya-api",
+        "source_system": "studentapp-api",
         "environment": "live-endpoint",
         "schema_revision": SCHEMA_REVISION,
     }
@@ -216,12 +215,12 @@ class SessionCompletionService:
         self._uow_factory = uow_factory
 
     async def _require_learner(self, session: AsyncSession, principal: AuthenticatedPrincipal) -> tuple[AppUser, UUID]:
-        user = await AppUserRepository(session).find_by_subject(principal.user_id)
-        if user is None:
+        found = await AppUserRepository(session).find_with_learner_link_by_subject(principal.user_id)
+        if found is None:
             raise ResourceNotFoundError()
+        user, link = found
         if user.profile_type != "LEARNER":
             raise ForbiddenError()
-        link = await AppUserLearnerLinkRepository(session).find_by_user(user.user_id)
         if link is None:
             raise ResourceNotFoundError()
         return user, link.learner_id
@@ -407,15 +406,28 @@ class SessionCompletionService:
         opportunities = await ItemOpportunityRepository(session).list_for_session(session_row.session_id)
         opportunity_ids = [o.item_opportunity_id for o in opportunities]
 
+        # Three set-based reads, not three per opportunity. This loop used to issue
+        # find_by_opportunity + list_for_opportunity + count_for_opportunity for each
+        # opportunity in turn, so the one request that ends a session paid 3 x
+        # MAX_OPPORTUNITIES_PER_SESSION sequential round trips on top of its own work -- 34
+        # statements against a mid-session complete's 18. The per-opportunity validation below is
+        # unchanged, including raising ConflictError for a missing instance or an attempt-less
+        # opportunity; only the number of round trips used to answer the same questions differs.
+        task_instances = await TaskInstanceRepository(session).map_by_opportunities(opportunity_ids)
+        attempts_by_opportunity = await AttemptRepository(session).map_for_opportunities(opportunity_ids)
+        hint_counts = await HintEventRepository(session).count_by_opportunities(opportunity_ids)
+
         opportunity_responses: list[OpportunityResponse] = []
         for opportunity in opportunities:
-            task_instance = await TaskInstanceRepository(session).find_by_opportunity(opportunity.item_opportunity_id)
+            task_instance = task_instances.get(opportunity.item_opportunity_id)
             if task_instance is None:
                 raise ConflictError()
-            attempts = await AttemptRepository(session).list_for_opportunity(opportunity.item_opportunity_id)
+            attempts = attempts_by_opportunity.get(opportunity.item_opportunity_id, [])
             if not attempts:
                 raise ConflictError()
-            hint_count = await HintEventRepository(session).count_for_opportunity(opportunity.item_opportunity_id)
+            # `.get(..., 0)`: a GROUP BY yields no row for an opportunity with no hints, where
+            # count_for_opportunity returned 0.
+            hint_count = hint_counts.get(opportunity.item_opportunity_id, 0)
             opportunity_responses.append(
                 _build_opportunity_response(opportunity, task_instance.task_instance_id, attempts, hint_count)
             )

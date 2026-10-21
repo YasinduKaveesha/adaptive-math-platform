@@ -9,7 +9,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
-from app.infrastructure.database import async_database_url
+from app.infrastructure.database import async_database_url, asyncpg_connect_args
 from app.infrastructure.persistence_models import Base
 
 
@@ -51,10 +51,15 @@ def run_sync_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    # Same connect-args the application engine builds (`app.infrastructure.database`): a managed
+    # provider's `sslmode` is stripped out of the URL by `async_database_url`, so without this the
+    # migration connection would fall back to asyncpg's opportunistic default rather than the TLS
+    # posture the pasted connection string actually asked for.
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=asyncpg_connect_args(get_settings().database_url),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(run_sync_migrations)

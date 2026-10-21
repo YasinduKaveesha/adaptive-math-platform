@@ -277,11 +277,20 @@ def test_invite_creation_concurrent_same_key_and_different_key() -> None:
             responses = list(pool.map(lambda _: submit_same_key(), range(2)))
         assert [response.status_code for response in responses] == [201, 201]
         assert len({response.json()["classroom_invite_id"] for response in responses}) == 1
-        # Different keys are independent commands and may each create a distinct invite.
+        # D49 (2026-09-14): a different Idempotency-Key is still a separate command, but it must
+        # NOT mint a second code -- a classroom has exactly one live join code for its whole life.
+        # Both calls return the SAME invite, and neither re-exposes the plaintext: that was shown
+        # once, at creation, and only its hash was kept. (This asserted two DISTINCT invites until
+        # D49; two live codes would both resolve while the teacher could only read one back.)
+        created_invite_id = responses[0].json()["classroom_invite_id"]
         different_a = client.post(f"/api/v1/classrooms/{classroom_id}/invites", json={}, headers=headers(str(uuid4())))
         different_b = client.post(f"/api/v1/classrooms/{classroom_id}/invites", json={}, headers=headers(str(uuid4())))
         assert different_a.status_code == different_b.status_code == 201
-        assert different_a.json()["classroom_invite_id"] != different_b.json()["classroom_invite_id"]
+        assert different_a.json()["classroom_invite_id"] == created_invite_id
+        assert different_b.json()["classroom_invite_id"] == created_invite_id
+        for repeat in (different_a, different_b):
+            assert repeat.json()["token_already_issued"] is True
+            assert repeat.json()["invite_token"] is None
     finally:
         close_client(client)
 
@@ -314,25 +323,34 @@ def test_invite_creation_rollback_and_retry_succeeds() -> None:
         close_client(retry)
 
 
-def test_invite_creation_expiry_is_24_hours() -> None:
+def test_invite_creation_code_is_permanent() -> None:
+    """D49: a class join code does not expire on a clock.
+
+    This asserted a 24-hour expiry until 2026-09-14, and was renamed rather than edited in place
+    because the property itself inverted. Children write the code down and the teacher dashboard
+    shows the same class key indefinitely, so a code now ends only when it is revoked -- which
+    deleting the classroom does -- never on a timer. `expires_at_utc` is therefore null.
+    """
     upgrade()
     teacher = f"teacher-invite-expiry-{uuid4()}"
     setup_teacher(teacher)
     classroom_id = create_classroom(teacher, "Expiry Room")
     payload = create_invite(teacher, classroom_id)
-    created = datetime.fromisoformat(payload["created_at_utc"])
-    expires = datetime.fromisoformat(payload["expires_at_utc"])
-    assert abs((expires - created) - timedelta(hours=24)) < timedelta(seconds=5)
+    assert payload["expires_at_utc"] is None
+    assert payload["token_already_issued"] is False
+    assert payload["invite_token"] is not None
 
 
 def test_join_code_format_excludes_ambiguous_characters() -> None:
     upgrade()
     teacher = f"teacher-invite-format-{uuid4()}"
     setup_teacher(teacher)
-    classroom_id = create_classroom(teacher, "Format Room")
+    # D49: one live code per classroom, so twenty distinct codes need twenty classrooms. Calling
+    # invites twice on a single classroom now returns the same code with the plaintext withheld,
+    # which would have collapsed this sample to one.
     seen_codes = set()
-    for _ in range(20):
-        payload = create_invite(teacher, classroom_id)
+    for index in range(20):
+        payload = create_invite(teacher, create_classroom(teacher, f"Format Room {index}"))
         canonical = payload["invite_token"].replace("-", "")
         assert len(canonical) == 8
         assert canonical == canonical.upper()
@@ -387,12 +405,16 @@ def test_resolve_unknown_revoked_and_expired() -> None:
     setup_learner(learner)
     classroom_id = create_classroom(teacher, "Fail Room")
     revoked_invite = create_invite(teacher, classroom_id)
-    expired_invite = create_invite(teacher, classroom_id)
     owner = client_for(teacher)
     try:
         assert owner.post(f"/api/v1/classroom-invites/{revoked_invite['classroom_invite_id']}/revoke", json={}, headers=headers(str(uuid4()))).status_code == 200
     finally:
         close_client(owner)
+    # D49: one live code per classroom, so the second invite can only be minted once the first is
+    # revoked. A code is created with `expires_at_utc` null now; `set_expired` back-dates it by
+    # hand so the resolve-time expiry branch -- which still rejects a dated, past expiry -- stays
+    # covered rather than becoming unreachable.
+    expired_invite = create_invite(teacher, classroom_id)
     asyncio.run(set_expired(UUID(expired_invite["classroom_invite_id"])))
     client = client_for(learner)
     try:
@@ -426,9 +448,11 @@ def test_resolve_replay_body_mismatch_rollback_and_leakage() -> None:
     teacher, learner = f"teacher-resolve-replay-{uuid4()}", f"learner-resolve-replay-{uuid4()}"
     setup_teacher(teacher)
     setup_learner(learner)
-    classroom_id = create_classroom(teacher, "Replay Room")
-    invite_a = create_invite(teacher, classroom_id)
-    invite_b = create_invite(teacher, classroom_id)
+    # D49: two separately resolvable codes require two classrooms -- a second invite call on one
+    # classroom returns the first code with the plaintext withheld, so `invite_b` would carry no
+    # token to resolve and the body-mismatch assertion below would stop testing anything.
+    invite_a = create_invite(teacher, create_classroom(teacher, "Replay Room A"))
+    invite_b = create_invite(teacher, create_classroom(teacher, "Replay Room B"))
     key = str(uuid4())
     client = client_for(learner)
     try:
@@ -477,10 +501,12 @@ def test_membership_request_pending_creation_and_repeated_use_returns_existing()
     assert first.status_code == 201
     assert first.json()["state"] == "PENDING"
     membership_id = first.json()["classroom_membership_id"]
-    # Repeated use via a brand-new invite for the SAME classroom, under a NEW idempotency key,
-    # must return the existing PENDING row rather than creating a duplicate.
-    another_invite = create_invite(teacher, classroom_id)
-    repeated = request_membership(learner, another_invite["invite_token"])
+    # Repeated use of the classroom's code, under a NEW idempotency key, must return the existing
+    # PENDING row rather than creating a duplicate. Before D49 this re-minted a fresh code for the
+    # same classroom, to prove the dedupe keys on (classroom, learner) rather than on the invite
+    # row. A classroom now has one code for its life, so re-entering that same code is also what a
+    # child would actually do.
+    repeated = request_membership(learner, invite["invite_token"])
     assert repeated.status_code == 201
     assert repeated.json()["classroom_membership_id"] == membership_id
     learner_id = asyncio.run(_learner_id_for_subject(learner))
@@ -558,12 +584,14 @@ def test_membership_request_unknown_revoked_and_expired_token() -> None:
     setup_learner(learner)
     classroom_id = create_classroom(teacher, "Request Fail Room")
     revoked_invite = create_invite(teacher, classroom_id)
-    expired_invite = create_invite(teacher, classroom_id)
     owner = client_for(teacher)
     try:
         assert owner.post(f"/api/v1/classroom-invites/{revoked_invite['classroom_invite_id']}/revoke", json={}, headers=headers(str(uuid4()))).status_code == 200
     finally:
         close_client(owner)
+    # D49: see test_resolve_unknown_revoked_and_expired -- the expired code has to be minted after
+    # the revoked one, and its past expiry is set by hand.
+    expired_invite = create_invite(teacher, classroom_id)
     asyncio.run(set_expired(UUID(expired_invite["classroom_invite_id"])))
     assert request_membership(learner, "NOSUCH-CODE").status_code == 404
     assert request_membership(learner, revoked_invite["invite_token"]).status_code == 409
@@ -950,9 +978,11 @@ def test_revocation_success_replay_path_mismatch_and_isolation() -> None:
     setup_teacher(teacher_a)
     setup_teacher(teacher_b)
     setup_learner(learner)
-    classroom_id = create_classroom(teacher_a, "Revoke Room")
-    invite_1 = create_invite(teacher_a, classroom_id)
-    invite_2 = create_invite(teacher_a, classroom_id)
+    # D49: one live code per classroom, so the two invites revoked independently here live in two
+    # classrooms -- both owned by teacher_a, which is what the path-mismatch and cross-teacher
+    # isolation assertions below require.
+    invite_1 = create_invite(teacher_a, create_classroom(teacher_a, "Revoke Room A"))
+    invite_2 = create_invite(teacher_a, create_classroom(teacher_a, "Revoke Room B"))
 
     owner = client_for(teacher_a)
     try:
@@ -992,7 +1022,9 @@ def test_revocation_expired_invite_conflict_and_does_not_mutate_memberships() ->
     classroom_id = create_classroom(teacher, "Revoke Expired Room")
     invite = create_invite(teacher, classroom_id)
     membership = request_membership(learner, invite["invite_token"]).json()
-    other_invite = create_invite(teacher, classroom_id)
+    # D49: `invite` is this classroom's one live code and has to stay live, since the membership
+    # above hangs off it. The expired invite under test therefore belongs to a second classroom.
+    other_invite = create_invite(teacher, create_classroom(teacher, "Revoke Expired Room B"))
     asyncio.run(set_expired(UUID(other_invite["classroom_invite_id"])))
     owner = client_for(teacher)
     try:

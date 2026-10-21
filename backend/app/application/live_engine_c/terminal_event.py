@@ -40,7 +40,7 @@ disclosed boundary.
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -145,8 +145,19 @@ async def write_completed_correct_terminal_event(
     generator_version: str,
     config_checksum: str,
     request_id: str,
+    known_max_index: Optional[int] = None,
+    known_max_timestamp: Optional[int] = None,
+    known_not_terminal: bool = False,
+    defer_flush: bool = False,
 ) -> CGameplayEventRecord:
-    """The ONE call site anywhere under ``app/`` that writes a terminal ``CGameplayEventRecord``
+    """PERF-01 (optional, default = unchanged behaviour): a caller that ALREADY holds the instance row lock and has
+    just read the instance's event stream (``submit_action``) passes what it knows -- ``known_max_index`` /
+    ``known_max_timestamp`` (the stream's maximum AFTER its own pending inserts) and ``known_not_terminal=True`` (it
+    checked, in the same transaction) -- so the two re-reads below are skipped; ``defer_flush=True`` returns the built row without adding
+    or flushing it, so the caller can insert it together with the answer events in one statement, in event_index order (the
+    caller then owns the ``IntegrityError`` -> ``ConflictError`` translation for the unique-terminal index).
+
+    The ONE call site anywhere under ``app/`` that writes a terminal ``CGameplayEventRecord``
     (T1-2, guard-tested by ``tests/test_be2_architecture_guards.py::
     test_only_completed_correct_writes_a_terminal_gameplay_event`` -- an AST scan, not a docstring
     promise). ``terminal_reason="completed_correct"`` is a literal string constant, never a
@@ -156,12 +167,15 @@ async def write_completed_correct_terminal_event(
     event_repo = CGameplayEventRecordRepository(session)
     # T1-3/T1-4's service-level check, second half of the triple's write-time protection (the
     # first half runs earlier in submit_action, before evaluate() is ever called).
-    if await event_repo.has_terminal_for_instance(c_task_instance_id):
+    if not known_not_terminal and await event_repo.has_terminal_for_instance(c_task_instance_id):
         raise ConflictError(
             details=[{"location": ["c_task_instance_id"], "type": "task_already_terminal"}]
         )
 
-    max_index, max_timestamp = await event_repo.max_index_and_timestamp_for_instance(c_task_instance_id)
+    if known_max_index is None or known_max_timestamp is None:
+        max_index, max_timestamp = await event_repo.max_index_and_timestamp_for_instance(c_task_instance_id)
+    else:
+        max_index, max_timestamp = known_max_index, known_max_timestamp
     event_id = uuid4()
     terminal_event = CGameplayEventRecord(
         c_gameplay_event_id=event_id,
@@ -184,6 +198,8 @@ async def write_completed_correct_terminal_event(
         config_checksum=config_checksum,
         **_provenance("c_gameplay_event", event_id, request_id, "c_task.completed_correct"),
     )
+    if defer_flush:
+        return terminal_event       # NOT added: the caller adds it after the events it must follow (insert order = add order)
     try:
         await event_repo.add(terminal_event)
     except IntegrityError as exc:

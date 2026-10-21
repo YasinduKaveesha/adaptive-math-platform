@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import {
-  ActivityIndicator,
   Animated,
+  InteractionManager,
   Platform,
   Pressable,
   type ScrollView,
@@ -14,13 +13,17 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { artwork } from '@/src/utils/artwork';
 import { createComponentBApi } from '@/src/api/component-b-api';
 import { useAuth } from '@/src/auth/auth-context';
 import { AppText } from '@/src/components/app-text';
 import { readPublicConfig } from '@/src/config/env';
-import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
+import {
+  readHomeSessionState,
+  writeHomeSessionState,
+} from '@/src/features/home/home-session-state-cache';
 import {
   combineHomeSessionState,
   derivePathNodeStates,
@@ -33,12 +36,16 @@ import {
   LEARNER_HEADER_HEIGHT,
   LEARNER_HEADER_HEIGHT_COMPACT,
 } from '@/src/features/navigation/learner-header-bar';
-import { LearnerTabBar } from '@/src/features/navigation/learner-tab-bar';
+import { prefetchBSessionBootstrap } from '@/src/features/session/b-session-prefetch';
+import {
+  peekBSessionPrefetch,
+  putBSessionPrefetch,
+} from '@/src/features/session/b-session-prefetch-cache';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 import { firstNameOf } from '@/src/utils/display-name';
 
-const heroArtwork = require('../../../assets/images/hero-section.png');
-const learningPathArtwork = require('../../../assets/images/learning-path.png');
+const heroArtwork = artwork.heroSection;
+const learningPathArtwork = artwork.learningPath;
 const heroAspectRatio = 1672 / 941;
 const heroBorderWidth = 4;
 /** Fraction of the hero's scrollable distance past which a settled gesture snaps to the path instead of back to the hero. */
@@ -71,11 +78,15 @@ const PATH_NODE_POSITIONS = [
   { color: '#9a64df', left: '20%', top: '68%' },
 ] as const;
 
+// `current` reads differently depending on whether a session is already running: mid-session it is
+// the question the child left off at, on a fresh path it is where they begin. Same node, same play
+// control, different truth.
 const nodeSubtitles: Record<PathNodeState, string> = {
   current: 'Up next',
   done: 'Answered',
   pending: 'Not started',
 };
+const FRESH_START_SUBTITLE = 'Start here';
 
 /** Shared learner landing page; Component B owns the lesson path and preparation entry points. */
 export function LearnerHomeScreen() {
@@ -83,7 +94,8 @@ export function LearnerHomeScreen() {
   const insets = useSafeAreaInsets();
   const compact = height < 760;
   const { getAccessToken, me, profileName } = useAuth();
-  const { preparingPlay } = useAdventureCharge();
+  // The authenticated Supabase subject: keys the Home->prep prefetch handoff.
+  const subject = me?.principal.user_id ?? null;
   // The personal-name fallback that used to sit at the end of this chain is gone: it was a real
   // person's name, so a child whose profile had not loaded yet was greeted as someone else.
   // 'Math Explorer' is the same neutral placeholder the prep screen uses. (The removed name is not
@@ -94,8 +106,31 @@ export function LearnerHomeScreen() {
     () => (configResult.config ? createComponentBApi(configResult.config) : null),
     [configResult.config],
   );
-  const [sessionState, setSessionState] = useState<HomeSessionState>({ kind: 'not-in-progress' });
+  // SEEDED FROM THE LAST RESOLVED STATE, not from the neutral one. Home unmounts on every
+  // navigation, so starting at not-in-progress meant each return repainted "Ready to Play" /
+  // question 1 "Start here" until two sequential reads finished, then snapped to the real panel.
+  // See home-session-state-cache.ts for the full account. A learner with nothing cached (cold
+  // start, or a different account) still begins at the neutral state exactly as before.
+  const [sessionState, setSessionState] = useState<HomeSessionState>(
+    () => readHomeSessionState(subject) ?? { kind: 'not-in-progress' },
+  );
   const mountedRef = useRef(true);
+
+  /**
+   * One place where a server-confirmed state is both remembered and rendered, so the two can never
+   * drift. The cache write is NOT guarded by `mountedRef`: the server's answer is just as true if
+   * the child navigated away mid-read, and remembering it is what makes the NEXT return instant.
+   * Only the React state update is guarded, because setting state on an unmounted screen is the
+   * thing that is actually invalid.
+   */
+  const applyResolvedSessionState = useCallback(
+    (next: HomeSessionState) => {
+      writeHomeSessionState(subject, next);
+      if (!mountedRef.current) return;
+      setSessionState(next);
+    },
+    [subject],
+  );
 
   // Two best-effort reads. Neither may block the screen: any failure degrades to not-in-progress,
   // which is self-correcting because POST /b/sessions returns an existing session anyway (see
@@ -108,19 +143,28 @@ export function LearnerHomeScreen() {
         const accessToken = await getAccessToken();
         if (!accessToken) return;
         const { session } = await api.getActiveSession(accessToken);
-        if (!session || session.state !== 'active') return;
+        if (!session || session.state !== 'active') {
+          // A DEFINITIVE "nothing in progress" -- the server answered, there is just no active
+          // session. This branch used to `return` and leave the state alone, which was harmless
+          // only because the state always started neutral. With a seeded cache it is load-bearing:
+          // without it, a session the child just FINISHED would keep rendering as in-progress for
+          // the rest of the app session. Remember what the server said, including when it says no.
+          applyResolvedSessionState({ kind: 'not-in-progress' });
+          return;
+        }
         const summary = await api.getSessionSummary(session.session_id, accessToken);
-        if (!mountedRef.current) return;
-        setSessionState(combineHomeSessionState(session, summary));
+        applyResolvedSessionState(combineHomeSessionState(session, summary));
       } catch {
-        // Deliberately silent: the neutral not-in-progress state is already on screen.
+        // Deliberately silent, and deliberately NOT cached: a failed read is not an answer, so the
+        // last state the server did confirm stays on screen rather than being replaced by a
+        // neutral panel the server never asserted.
       }
     };
     void load();
     return () => {
       mountedRef.current = false;
     };
-  }, [api, getAccessToken]);
+  }, [api, applyResolvedSessionState, getAccessToken]);
 
   // Once this screen has been visited and left AT ALL — the Play tab (LearnerTabBar's Play button,
   // which this screen has no other hook into and which now goes straight into a Component C
@@ -139,41 +183,99 @@ export function LearnerHomeScreen() {
 
   const inProgress = sessionState.kind === 'in-progress';
   const nodeStates = derivePathNodeStates(sessionState, PATH_NODE_POSITIONS.length);
-  // Always through preparation: the prep screen performs its own resume check (and, as of the
-  // prefetch change in session-preparation-screen.tsx, fetches the first question there too, so
-  // the session screen it navigates to never shows its own loading phase) — both the hero button
-  // and the "Your Session" card's own current-question control below go through it, on owner
-  // instruction (2026-08-27) overriding this comment's own prior "jump straight into the session"
-  // reasoning, which is no longer what either button does.
+  // Always through preparation -- both the hero button and the "Your Session" card's own
+  // current-question control, on owner instruction (2026-08-27).
+  //
+  // The prep screen no longer only checks readiness: as of 2026-09-27 both entry points also kick
+  // off a background prefetch here (start-or-resume the session, then select the first question)
+  // and hand the result to the session screen, so the child sees ONE loading surface -- the prep
+  // screen's own artwork -- instead of it and then "Getting your question ready...". The previous
+  // version of this comment claimed the prep screen already did this; it never did.
+  //
+  // Best-effort throughout: a rejected promise is caught by the consumer, which falls through to
+  // the existing unprefetched path.
+  //
+  // IDEMPOTENT. It peeks before it puts, so the warm-up effect below and a later button press
+  // share ONE in-flight bootstrap instead of the press discarding a prefetch that is already
+  // most of the way done -- which is the entire point of warming it early.
+  const startBSessionPrefetch = useCallback(() => {
+    if (!subject) return;
+    if (peekBSessionPrefetch(subject)) return;
+    putBSessionPrefetch(subject, prefetchBSessionBootstrap(subject, getAccessToken));
+  }, [getAccessToken, subject]);
+
+  /**
+   * WARM COMPONENT B WHILE HOME IS OPEN (owner instruction, 2026-10-10).
+   *
+   * Starts the session and selects the first question as soon as Home has settled, so pressing the
+   * hero button or the path's play control lands on a bootstrap that is already finished rather
+   * than starting one. That removes roughly a session-start plus a question-selection round trip
+   * from the press -- the bulk of the wait the preparation screen exists to cover.
+   *
+   * THIS REVERSES THE EARLIER RULE, deliberately, and the reason the rule existed has been
+   * retracted. The audit originally said B must not be preloaded merely because Home opened,
+   * because `selectOpportunity` was believed to light the question's five-minute answer clock.
+   * It does not: `anchor_presentation` sets `timeout_deadline_utc = now + timeout` on the FIRST
+   * acknowledgement, which `live-session-screen.tsx` sends when the question renders. Time spent
+   * on Home, or on the preparation screen, is not charged to the child.
+   *
+   * WHAT IT DOES COST, stated because it is not nothing. A learner who opens Home and never plays
+   * leaves a session and one open opportunity behind, and `sessions_since_practice` -- which feeds
+   * the `spacing_due` selection feature -- counts distinct sessions. The cost is BOUNDED to one:
+   * `POST /b/sessions` returns any existing starting-or-active session rather than minting a
+   * second (`b_session_lifecycle.py`), so repeated visits reuse it. It is the session that child
+   * would have used anyway, created earlier.
+   *
+   * `runAfterInteractions` so the bootstrap cannot compete with Home's own first frame; the point
+   * is to spend idle time, not the time the child is waiting to see the screen.
+   */
+  useEffect(() => {
+    if (!subject) return;
+    const task = InteractionManager.runAfterInteractions(() => startBSessionPrefetch());
+    return () => task.cancel();
+  }, [startBSessionPrefetch, subject]);
   const openBLearning = () => {
     // Treated the same as scrolling past the hero (see handleGestureSettle's own dismiss branch):
     // once the child has used the hero's own call-to-action, a later return to this screen should
     // open straight at the session card rather than showing the hero again from the top.
     heroDismissedThisAppSession = true;
+    startBSessionPrefetch();
     router.push('/(learner)/prepare');
   };
-  const resumeCurrentQuestion = () => {
-    if (sessionState.kind !== 'in-progress') return;
+  // The path's play control. Named for the resume case it was written for, but it now also serves
+  // the not-in-progress one, where node 1 starts a fresh session -- both go through preparation,
+  // which resolves resume-or-start for itself, so this needs no branch of its own. The early
+  // return that used to sit here made the control inert in exactly the case it was added for.
+  const openCurrentQuestion = () => {
+    heroDismissedThisAppSession = true;
+    startBSessionPrefetch();
     router.push('/(learner)/prepare');
   };
   const scrollRef = useRef<ScrollView>(null);
   const dismissTriggeredRef = useRef(heroDismissedThisAppSession);
   const snapInFlightRef = useRef(false);
-  // Whether THIS mount should open already scrolled past the hero, straight to the session/path
-  // card — true once the hero has been "used" once in this app session (scrolled past, see
-  // handleGestureSettle, OR the hero's own CTA button pressed, see openBLearning). This decides
-  // only where the ScrollView starts; it must NEVER disable scrolling itself — that used to be
-  // `scrollEnabled={false}` after the first dismiss, which permanently locked the child out of
-  // scrolling back up to see the hero again for the rest of the app session. Read once via
-  // `useRef`, not `useState`: a later change to the module-level flag (from a scroll on THIS
-  // mount) must not retroactively move where THIS mount started.
+  // Whether THIS mount opens past the hero, straight at the session/path card — true once the hero
+  // has been "used" once in this app session (scrolled past, the CTA pressed, a path node pressed,
+  // or simply leaving this screen at all: see the catch-all cleanup effect above). Read once via
+  // `useRef`, not `useState`, so a later change to the module flag (from a scroll on THIS mount)
+  // cannot retroactively move where THIS mount started.
+  //
+  // OWNER RULING, 2026-09-28: when this is true the hero is not rendered AT ALL, and the screen
+  // does not scroll. The hero is a first-run welcome -- it belongs to a fresh app start or a fresh
+  // login, not to every return from Profile or Play.
+  //
+  // This reverses an earlier decision, deliberately. `scrollEnabled={false}` used to be set here
+  // and was removed as a bug, because on its own it locked the child out of scrolling back up to a
+  // hero that was still rendered above them. NOT RENDERING the hero is a different thing from
+  // hiding it behind a disabled scroll: with it gone the path panel is the entire content, and the
+  // panel is already sized to exactly fit the viewport (`pathViewportHeight` below), so nothing is
+  // off-screen and there is nothing to scroll to. The old failure mode cannot recur, because there
+  // is no longer anything above the fold to be locked away from.
+  //
+  // It also removes work rather than adding it: no imperative `scrollToEnd`, and no `layoutReady`
+  // delay to hide the frame before it lands (both below are now skipped entirely in this case).
   const startScrolledToPath = useRef(heroDismissedThisAppSession).current;
-  // Guards `scrollToEnd` so it only ever fires once per mount, the moment the content is first
-  // measured — never again after that, even though `onContentSizeChange`/`onLayout` can keep
-  // firing (e.g. from font/image loads settling in). Without this guard, any later re-fire would
-  // yank the child back down to the bottom even after they had deliberately scrolled up to look
-  // at the hero again, which is exactly the "can't scroll up" bug this whole change fixes.
-  const initialScrollAppliedRef = useRef(false);
+  const showHero = !startScrolledToPath;
   const [showContinuationFade, setShowContinuationFade] = useState(
     () => !heroDismissedThisAppSession,
   );
@@ -193,9 +295,17 @@ export function LearnerHomeScreen() {
     inputRange: [0, 10],
     outputRange: [1, 0],
   });
+  // The tab bar AND both safe-area insets belong to the learner LAYOUT now, not to this screen
+  // (app/(learner)/_layout.tsx hoisted them out so they stop unmounting on every navigation), so
+  // this screen is handed a box that already excludes all three.
+  //
+  // This figure is only ever a FALLBACK, used for the single frame before the ScrollView has
+  // measured itself -- `pathViewportHeight` prefers the measured height the moment it arrives, and
+  // `layoutReady` keeps that frame off screen either way. It is deliberately an estimate that errs
+  // large rather than a second copy of the layout's arithmetic, which would be one more number to
+  // drift out of step with the chrome it describes.
   const usableHeight = height - insets.top - insets.bottom;
   const fixedHeaderHeight = compact ? LEARNER_HEADER_HEIGHT_COMPACT : LEARNER_HEADER_HEIGHT;
-  const fixedNavHeight = (compact ? 61 : 73) + 11.75;
   const [measuredViewportHeight, setMeasuredViewportHeight] = useState(0);
   // The "buttons glitch on returning to home" report: this screen fully remounts every time it's
   // navigated back to (goHome/goToGameHub elsewhere use router.replace, and expo-router mounts a
@@ -208,7 +318,7 @@ export function LearnerHomeScreen() {
   // happens off-screen instead of as a visible jump.
   const [layoutReady, setLayoutReady] = useState(false);
   const pathViewportHeight =
-    measuredViewportHeight || Math.max(0, usableHeight - fixedHeaderHeight - fixedNavHeight);
+    measuredViewportHeight || Math.max(0, usableHeight - fixedHeaderHeight);
   // The header already supplies the visible gap above the panel (its own
   // paddingBottom), so the panel only needs a matching paddingBottom of its
   // own to keep the gap below it equal — no separate paddingTop here.
@@ -315,7 +425,7 @@ export function LearnerHomeScreen() {
                         isCurrent && compact && styles.pathStageSubtitleActiveCompact,
                         isCurrent && { color: node.color },
                       ]}>
-                      {nodeSubtitles[nodeState]}
+                      {isCurrent && !inProgress ? FRESH_START_SUBTITLE : nodeSubtitles[nodeState]}
                     </AppText>
                   </View>
                 </View>
@@ -339,7 +449,7 @@ export function LearnerHomeScreen() {
                   accessibilityLabel={pathNodeLabel(index, nodeState)}
                   accessibilityRole="button"
                   key={index}
-                  onPress={resumeCurrentQuestion}
+                  onPress={openCurrentQuestion}
                   style={({ pressed }) => [
                     styles.pathStage,
                     { left: node.left, top: node.top },
@@ -365,36 +475,24 @@ export function LearnerHomeScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={styles.safeArea}>
       <View style={styles.mobileCanvas}>
         <LearnerHeaderBar compact={compact} displayName={displayName} />
 
         <Animated.ScrollView
           bounces
           contentContainerStyle={styles.scrollContent}
-          onContentSizeChange={() => {
-            // One-shot — see initialScrollAppliedRef's own comment. This can fire again later
-            // (image/font loads settling in) without re-triggering the jump.
-            if (startScrolledToPath && !initialScrollAppliedRef.current) {
-              initialScrollAppliedRef.current = true;
-              scrollRef.current?.scrollToEnd({ animated: false });
-            }
-          }}
+          // No `onContentSizeChange` and no imperative `scrollToEnd` any more. Both existed only to
+          // jump PAST a rendered hero on a return visit, along with the guard ref that kept the
+          // jump one-shot and the 50ms delay that hid the frame before it landed. The hero is
+          // simply not rendered on those mounts now, so there is nothing to jump past: the path
+          // panel is the whole content and it opens where it belongs.
           onLayout={(event) => {
             setMeasuredViewportHeight(event.nativeEvent.layout.height);
-            if (startScrolledToPath && !initialScrollAppliedRef.current) {
-              initialScrollAppliedRef.current = true;
-              scrollRef.current?.scrollToEnd({ animated: false });
-              // The imperative scroll doesn't necessarily apply in this same frame (react-native-
-              // web in particular can lag a frame or two behind scrollToEnd's call) — revealing at
-              // the exact same instant risks one visible frame of the hero before the jump to the
-              // path view. This short delay gives it room to land before the reveal.
-              setTimeout(() => {
-                if (mountedRef.current) setLayoutReady(true);
-              }, 50);
-            } else {
-              setLayoutReady(true);
-            }
+            // `layoutReady` still earns its keep: the panel's stage buttons are sized from this
+            // measured height, and until the first real `onLayout` lands they would render once at
+            // the fallback estimate and visibly snap. This hides that correction, nothing more.
+            setLayoutReady(true);
           }}
           onMomentumScrollEnd={(event) => handleGestureSettle(event.nativeEvent)}
           onScroll={handleScroll}
@@ -408,51 +506,54 @@ export function LearnerHomeScreen() {
             if (speed < 0.05) handleGestureSettle(event.nativeEvent);
           }}
           ref={scrollRef}
+          scrollEnabled={showHero}
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
           style={[styles.scrollView, !layoutReady && styles.scrollViewHidden]}>
-          <Animated.View
-            style={[
-              styles.heroSection,
-              compact && styles.sectionCompact,
-              { opacity: introOpacity, transform: [{ translateY: introLift }] },
-            ]}>
-            <View style={styles.hero}>
-              <Image
-                accessibilityLabel="MathMingo adventure landscape"
-                contentFit="cover"
-                source={heroArtwork}
-                style={styles.heroArtwork}
-              />
-              <View style={styles.heroCopy}>
-                <AppText style={[styles.heroTitle, compact && styles.heroTitleCompact]}>
-                  Let&apos;s make math
-                </AppText>
-                <View style={styles.heroAdventureLine}>
-                  <AppText style={[styles.heroTitle, styles.heroAdventureLead, compact && styles.heroTitleCompact]}>
-                    an
+          {showHero ? (
+            <Animated.View
+              style={[
+                styles.heroSection,
+                compact && styles.sectionCompact,
+                { opacity: introOpacity, transform: [{ translateY: introLift }] },
+              ]}>
+              <View style={styles.hero}>
+                <Image
+                  accessibilityLabel="MathMingo adventure landscape"
+                  contentFit="cover"
+                  source={heroArtwork}
+                  style={styles.heroArtwork}
+                />
+                <View style={styles.heroCopy}>
+                  <AppText style={[styles.heroTitle, compact && styles.heroTitleCompact]}>
+                    Let&apos;s make math
                   </AppText>
-                  <AppText style={[styles.heroAdventure, compact && styles.heroAdventureCompact]}>
-                    adventure!
-                  </AppText>
+                  <View style={styles.heroAdventureLine}>
+                    <AppText style={[styles.heroTitle, styles.heroAdventureLead, compact && styles.heroTitleCompact]}>
+                      an
+                    </AppText>
+                    <AppText style={[styles.heroAdventure, compact && styles.heroAdventureCompact]}>
+                      adventure!
+                    </AppText>
+                  </View>
                 </View>
+                <Pressable
+                  accessibilityHint="Opens session preparation"
+                  accessibilityRole="button"
+                  onPress={openBLearning}
+                  style={({ pressed }) => [
+                    styles.heroButton,
+                    compact && styles.heroButtonCompact,
+                    pressed && styles.buttonPressed,
+                  ]}>
+                  <AppText style={[styles.heroButtonText, compact && styles.heroButtonTextCompact]}>
+                    {inProgress ? 'Resume Adventure' : 'Start Adventure'}
+                  </AppText>
+                  <Ionicons color={colors.primaryForeground} name="chevron-forward" size={compact ? 18.6 : 22.32} />
+                </Pressable>
               </View>
-              <Pressable
-                accessibilityHint="Opens session preparation"
-                accessibilityRole="button"
-                onPress={openBLearning}
-                style={({ pressed }) => [
-                  styles.heroButton,
-                  compact && styles.heroButtonCompact,
-                  pressed && styles.buttonPressed,
-                ]}>
-                <AppText style={[styles.heroButtonText, compact && styles.heroButtonTextCompact]}>
-                  {inProgress ? 'Resume Adventure' : 'Start Adventure'}
-                </AppText>
-                <Ionicons color={colors.primaryForeground} name="chevron-forward" size={compact ? 18.6 : 22.32} />
-              </Pressable>
-            </View>
-          </Animated.View>
+            </Animated.View>
+          ) : null}
 
           {pathPanelContent}
         </Animated.ScrollView>
@@ -461,7 +562,7 @@ export function LearnerHomeScreen() {
           <Animated.View
             style={[
               styles.scrollContinuationFade,
-              { bottom: fixedNavHeight, opacity: continuationFadeOpacity },
+              { bottom: 0, opacity: continuationFadeOpacity },
             ]}
           >
             <View style={styles.scrollContinuationFade1} />
@@ -473,30 +574,12 @@ export function LearnerHomeScreen() {
             <View style={styles.scrollContinuationFade7} />
           </Animated.View>
         )}
-        <LearnerTabBar activeTab="home" playEnabled />
-
-        {preparingPlay ? (
-          <View pointerEvents="none" style={styles.preparingOverlay}>
-            <BlurView intensity={40} style={styles.preparingOverlay} tint="light" />
-            <ActivityIndicator color={colors.primary} size="large" style={styles.preparingSpinner} />
-          </View>
-        ) : null}
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  preparingOverlay: {
-    alignItems: 'center',
-    bottom: 0,
-    justifyContent: 'center',
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0,
-  },
-  preparingSpinner: { transform: [{ scale: 2 }] },
   buttonPressed: { borderBottomWidth: 0, transform: [{ translateY: 3 }] },
   dashboardSection: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.sm, paddingTop: 0, width: '100%' },
   dots: { flexDirection: 'row', gap: 2, marginTop: 2 },

@@ -12,11 +12,14 @@ from app.application.attempt_submission import AttemptSubmissionService
 from app.application.b_session_lifecycle import BSessionLifecycleService
 from app.application.hint_request import HintRequestService
 from app.application.opportunity_selection import OpportunitySelectionService
+from app.application.presentation_ack import PresentationAckService
 from app.application.session_completion import SessionCompletionService
 from app.domain.b_attempt import AttemptResponse, SubmitResponseRequest
 from app.domain.b_completion import OpportunityAdvanceResponse, SessionStandingResponse
 from app.domain.b_hint import HintRequestResponse
 from app.domain.b_opportunity import OpportunityPresentationResponse
+from app.domain.b_presentation_ack import PresentationAckResponse
+from app.domain.live_engine.locales import resolve_locale
 from app.domain.b_session import ActiveSessionResponse, SessionCommandResponse
 from app.domain.principal import AuthenticatedPrincipal
 from app.infrastructure.auth import get_authenticated_principal
@@ -43,6 +46,10 @@ def hint_request_service() -> HintRequestService:
 
 def session_completion_service() -> SessionCompletionService:
     return SessionCompletionService()
+
+
+def presentation_ack_service() -> PresentationAckService:
+    return PresentationAckService()
 
 
 @router.post("", response_model=SessionCommandResponse, status_code=status.HTTP_201_CREATED)
@@ -96,8 +103,42 @@ async def select_opportunity(
     request: Request,
     principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)],
     use_cases: Annotated[OpportunitySelectionService, Depends(opportunity_selection_service)],
+    accept_language: Annotated[str | None, Header(alias="Accept-Language")] = None,
 ) -> OpportunityPresentationResponse:
-    return await use_cases.select_next_opportunity(principal, session_id, request.state.request_id)
+    """The question the child answers next, in the language they read.
+
+    ``Accept-Language`` rather than a new field or a stored profile column: it is the standard way
+    to say this, it is a CORS-safelisted request header so the browser sends it without a preflight
+    change, and it needs no migration. An absent or unrecognised value resolves to English
+    (``locales.DEFAULT_LOCALE``), so this is additive -- an older client that sends nothing keeps
+    exactly the behaviour it has now.
+    """
+    return await use_cases.select_next_opportunity(
+        principal, session_id, request.state.request_id, resolve_locale(accept_language)
+    )
+
+
+@router.post(
+    "/{session_id}/opportunities/{item_opportunity_id}/presented",
+    response_model=PresentationAckResponse,
+)
+async def acknowledge_presentation(
+    session_id: UUID,
+    item_opportunity_id: UUID,
+    request: Request,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)],
+    use_cases: Annotated[PresentationAckService, Depends(presentation_ack_service)],
+) -> PresentationAckResponse:
+    """The learner is now looking at this question -- start its answering clock here.
+
+    No idempotency key and no body, for the same reason `select_opportunity` has neither: the
+    operation is intrinsically once-only (the first acknowledgement anchors, every later one is a
+    no-op returning the same deadline), so a key would add a token to manage without adding a
+    guarantee. 200 rather than 201: nothing is created, an existing row is anchored.
+    """
+    return await use_cases.acknowledge_presentation(
+        principal, session_id, item_opportunity_id, request.state.request_id
+    )
 
 
 @router.post(

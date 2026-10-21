@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
 // Lives in src/api/__tests__/ because that is the glob `npm run test:contract` runs.
 // live-session-logic.ts is pure and imports nothing from react/react-native/expo, so this needs
@@ -11,6 +14,7 @@ import type {
   AttemptResponse,
   OpportunityPresentationResponse,
 } from '@/src/api/generated/openapi-types';
+import { isPresentationAckResponse } from '@/src/api/runtime-validation';
 import {
   classifyAttemptOutcome,
   classifyFailure,
@@ -20,9 +24,14 @@ import {
   initialAnswerState,
   outcomeView,
   planPresentation,
+  readPromptInstruction,
   readPromptStem,
 } from '@/src/features/session/live-session-logic';
 import { encodeSubmittedValue } from '@/src/features/session/renderers/encode';
+import { acceptLanguageHeader, readLearnerLocale } from '@/src/config/locale';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const frontendRoot = resolve(here, '..', '..', '..');
 
 // --- skill label ------------------------------------------------------------------------------
 
@@ -86,6 +95,83 @@ function presentation(
 function planFor(response: OpportunityPresentationResponse) {
   return planPresentation(response, response.request_id);
 }
+
+// --- presentation acknowledgement ------------------------------------------------------------------
+//
+// The call that starts the answering clock at the render. Its response carries the server's
+// anchored deadline, which the screen adopts in place of the selection-time one.
+
+test('the acknowledgement response validator requires a usable deadline', () => {
+  const ok = {
+    item_opportunity_id: 'opportunity-1',
+    server_timeout_deadline_utc: '2026-09-27T12:05:00Z',
+    anchored: true,
+    request_id: 'req-ack-1',
+  };
+  assert.equal(isPresentationAckResponse(ok), true);
+  // A replay is a valid response, not a failure -- it simply did not anchor.
+  assert.equal(isPresentationAckResponse({ ...ok, anchored: false }), true);
+
+  assert.equal(isPresentationAckResponse({ ...ok, server_timeout_deadline_utc: '' }), false);
+  assert.equal(isPresentationAckResponse({ ...ok, item_opportunity_id: '' }), false);
+  assert.equal(isPresentationAckResponse({ ...ok, anchored: 'yes' }), false);
+  assert.equal(isPresentationAckResponse({ ...ok, request_id: undefined }), false);
+  assert.equal(isPresentationAckResponse(null), false);
+});
+
+test('the session screen acknowledges once per opportunity and adopts the anchored deadline', () => {
+  const source = readFileSync(resolve(frontendRoot, 'src/features/session/live-session-screen.tsx'), 'utf-8');
+  // Only from the rendered question -- acknowledging a loading or failed phase would start the
+  // clock on something the child cannot see, which is the whole bug this closes.
+  assert.match(source, /if \(phase\.kind !== 'question' \|\| !api\) return;/);
+  // Guarded so a re-render does not re-send.
+  assert.match(source, /ackedOpportunityRef\.current === opportunityId/);
+  // The server's deadline replaces the selection-time one.
+  assert.match(source, /timeoutDeadlineUtc: ack\.server_timeout_deadline_utc/);
+});
+
+// --- the authored instruction sentence ------------------------------------------------------------
+//
+// Server-supplied, for the few templates whose stem is not a question on its own (a bare
+// "2, 3, 4, __"). The app relays it and never composes one -- see the backend's
+// app/domain/live_engine/prompt_instructions.py.
+
+test('readPromptInstruction accepts a real sentence and rejects anything else', () => {
+  assert.equal(readPromptInstruction({ instruction: 'Guess the next number.' }), 'Guess the next number.');
+  assert.equal(readPromptInstruction({ instruction: '  Guess the next number.  ' }), 'Guess the next number.');
+  assert.equal(readPromptInstruction({ instruction: '   ' }), null);
+  assert.equal(readPromptInstruction({ instruction: '' }), null);
+  assert.equal(readPromptInstruction({ instruction: 42 }), null);
+  assert.equal(readPromptInstruction({ instruction: null }), null);
+  assert.equal(readPromptInstruction({ stem: 'no instruction here' }), null);
+  assert.equal(readPromptInstruction({}), null);
+});
+
+test('planPresentation carries the instruction through when the server sends one', () => {
+  const plan = planFor(
+    presentation({ prompt: { stem: '2, 3, 4, __', instruction: 'Guess the next number.', blank_position: 'terminal' } }),
+  );
+  assert.equal(plan.kind, 'render');
+  if (plan.kind !== 'render') return;
+  assert.equal(plan.instruction, 'Guess the next number.');
+  // The stem is still the stem: the instruction is additive, never a replacement.
+  assert.equal(plan.stem, '2, 3, 4, __');
+});
+
+test('a missing instruction is null and never blocks the question', () => {
+  const plan = planFor(presentation());
+  assert.equal(plan.kind, 'render');
+  if (plan.kind !== 'render') return;
+  // Unlike a missing stem, this is the normal case for most templates -- still 'render'.
+  assert.equal(plan.instruction, null);
+});
+
+test('an item with an instruction but no stem is still unrenderable', () => {
+  const plan = planFor(presentation({ prompt: { instruction: 'Guess the next number.' } }));
+  assert.equal(plan.kind, 'unrenderable');
+  if (plan.kind !== 'unrenderable') return;
+  assert.equal(plan.reason, 'missing-stem');
+});
 
 test('planPresentation renders a known format with its stem, skill label and spec', () => {
   const plan = planFor(presentation());
@@ -297,4 +383,89 @@ test('failureRequestId surfaces the support code only when the server sent one',
   assert.equal(failureRequestId(new ApiClientError('server', 'x', 500, 'req-500')), 'req-500');
   assert.equal(failureRequestId(new ApiClientError('network', 'x')), null);
   assert.equal(failureRequestId(new Error('boom')), null);
+});
+
+// --- learner locale --------------------------------------------------------------------------
+//
+// The app never translates a question; it says which language it wants and relays whatever the
+// server sends. These pin the fallback that keeps unreviewed Sinhala away from a child by default.
+
+test('the learner locale is English unless deliberately set', () => {
+  const previous = process.env.EXPO_PUBLIC_LEARNER_LOCALE;
+  try {
+    delete process.env.EXPO_PUBLIC_LEARNER_LOCALE;
+    assert.equal(readLearnerLocale(), 'en');
+    process.env.EXPO_PUBLIC_LEARNER_LOCALE = '';
+    assert.equal(readLearnerLocale(), 'en');
+    // A typo must not silently ship a half-translated build.
+    process.env.EXPO_PUBLIC_LEARNER_LOCALE = 'sinhala';
+    assert.equal(readLearnerLocale(), 'en');
+    process.env.EXPO_PUBLIC_LEARNER_LOCALE = 'ta';
+    assert.equal(readLearnerLocale(), 'en');
+  } finally {
+    if (previous === undefined) delete process.env.EXPO_PUBLIC_LEARNER_LOCALE;
+    else process.env.EXPO_PUBLIC_LEARNER_LOCALE = previous;
+  }
+});
+
+test('Sinhala is accepted in both bare and regional form, and negotiates down to English', () => {
+  const previous = process.env.EXPO_PUBLIC_LEARNER_LOCALE;
+  try {
+    for (const value of ['si', 'si-LK', 'SI', ' si ']) {
+      process.env.EXPO_PUBLIC_LEARNER_LOCALE = value;
+      assert.equal(readLearnerLocale(), 'si', value);
+    }
+    // English is offered at lower priority so an item with no Sinhala wording can still resolve.
+    const header = acceptLanguageHeader('si');
+    assert.match(header, /^si-LK,si;q=0\.9,en;q=0\.5$/);
+    assert.equal(acceptLanguageHeader('en'), 'en');
+  } finally {
+    if (previous === undefined) delete process.env.EXPO_PUBLIC_LEARNER_LOCALE;
+    else process.env.EXPO_PUBLIC_LEARNER_LOCALE = previous;
+  }
+});
+
+// --- pre-advance -----------------------------------------------------------------------------
+//
+// The next question is requested while the child reads the verdict, so "Next question" renders
+// instead of waiting. Its safety rests entirely on one invariant: advancing CLOSES the current
+// opportunity, so it must never run while the child can still retry that same question.
+
+test('only terminal outcomes forgo a retry, which is what gates the pre-advance', () => {
+  // If this ever flips for 'incorrect', the pre-advance would close a question out from under a
+  // child about to press TRY AGAIN, and the retry would hit a server that has moved on.
+  assert.equal(outcomeView('incorrect').canTryAgain, true);
+  assert.equal(outcomeView('correct').canTryAgain, false);
+  assert.equal(outcomeView('timeout').canTryAgain, false);
+});
+
+test('the session screen pre-advances only when the child cannot try again', () => {
+  const source = readFileSync(resolve(frontendRoot, 'src/features/session/live-session-screen.tsx'), 'utf-8');
+  const effect = source.slice(source.indexOf('// PRE-ADVANCE.'), source.indexOf('const tryAgain'));
+  assert.ok(effect.length > 0, 'the pre-advance effect must exist');
+  // 2026-10-10: the body moved into `primeAdvance` so a press-in can reuse it (see
+  // b-pre-advance-intent.test.ts). The PROPERTY is unchanged -- the automatic pre-advance still
+  // fires only for an outcome the child cannot retry -- so this matches the guard rather than the
+  // exact expression it used to be written as.
+  assert.match(effect, /outcomeView\(outcome\)\.canTryAgain\) return;/);
+  // Only from a rendered question with a verdict on screen.
+  assert.match(effect, /phase\.kind !== 'question' \|\| outcome === null/);
+  // Keyed per opportunity, so a finished question's advance can never be applied to a new one.
+  assert.match(effect, /advancePrefetchRef\.current\?\.itemOpportunityId === itemOpportunityId/);
+});
+
+test('a failed pre-advance is retried under its ORIGINAL idempotency key, never a fresh one', () => {
+  // The fingerprint is {session_id, item_opportunity_id}: replaying the same key returns the
+  // original advance, while a new key risks closing the opportunity twice and skipping a question.
+  const source = readFileSync(resolve(frontendRoot, 'src/features/session/live-session-screen.tsx'), 'utf-8');
+  assert.match(source, /const command = prefetched\?\.command \?\? buildAdvanceCommand\(itemOpportunityId\)/);
+  // The retry path reuses `command`, and does not build a second one.
+  // Bounded to `advance` itself: the pre-advance effect below it builds the FIRST command and
+  // legitimately calls the same helper, so a looser slice would count two.
+  const advanceBody = source.slice(
+    source.indexOf('const advance = useCallback'),
+    source.indexOf('// PRE-ADVANCE.'),
+  );
+  assert.equal((advanceBody.match(/buildAdvanceCommand\(/g) ?? []).length, 1);
+  assert.match(advanceBody, /response = await sendAdvance\(command\);/);
 });

@@ -30,7 +30,6 @@ from app.domain.b_session import ActiveSessionResponse, SessionCommandResponse, 
 from app.domain.principal import AuthenticatedPrincipal
 from app.infrastructure.persistence_models import AppUser, AuditEvent, IdempotencyRecord, RuntimeBundleRecord, SessionRecord
 from app.infrastructure.repositories import (
-    AppUserLearnerLinkRepository,
     AppUserRepository,
     IdempotencyRecordRepository,
     RuntimeBundleRecordRepository,
@@ -72,7 +71,7 @@ def provenance(user_id: UUID, request_id: str, operation: str, resource_type: st
         "resource_type": resource_type,
         "resource_id": resource_id,
         "source_class": "REAL",
-        "source_system": "upadya-api",
+        "source_system": "studentapp-api",
         "environment": "live-endpoint",
         "schema_revision": SCHEMA_REVISION,
     }
@@ -99,10 +98,12 @@ class BSessionLifecycleService:
         return user
 
     async def _require_learner(self, session: AsyncSession, principal: AuthenticatedPrincipal) -> tuple[AppUser, UUID]:
-        user = await self._require_user(session, principal)
+        found = await AppUserRepository(session).find_with_learner_link_by_subject(principal.user_id)
+        if found is None:
+            raise ResourceNotFoundError()
+        user, link = found
         if user.profile_type != "LEARNER":
             raise ForbiddenError()
-        link = await AppUserLearnerLinkRepository(session).find_by_user(user.user_id)
         if link is None:
             raise ResourceNotFoundError()
         return user, link.learner_id

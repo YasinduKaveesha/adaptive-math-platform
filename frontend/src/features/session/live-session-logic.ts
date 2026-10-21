@@ -50,6 +50,12 @@ export type SessionPlan =
       kind: 'render';
       spec: RendererSpec;
       stem: string;
+      // The server's authored instruction sentence for templates whose stem is not a question on
+      // its own -- "Guess the next number." above a bare "2, 3, 4, __". Server-supplied and
+      // relayed verbatim, exactly like `stem`: the app never composes one (see the backend's
+      // app/domain/live_engine/prompt_instructions.py for why it is authored there). `null` for
+      // every template whose stem already states its own task, which is most of them.
+      instruction: string | null;
       // The whole prompt payload, carried through unmodified for FE-3g's visual registry to read.
       // `stem` above stays the only *text* taken from it; this is not a licence to render arbitrary
       // keys as prose. Nothing here inspects or transforms it — the registry decides what is
@@ -89,6 +95,19 @@ export function readPromptStem(prompt: Record<string, unknown>): string | null {
 }
 
 /**
+ * The server's authored instruction, when the template has one. Read exactly like `stem` -- a
+ * non-string or blank value is `null`, never a guess. A missing instruction is the normal case
+ * (most stems ask their own question) and is NOT an unrenderable item: unlike `stem`, this being
+ * absent never blocks the question, it just means there is no extra sentence to draw.
+ */
+export function readPromptInstruction(prompt: Record<string, unknown>): string | null {
+  const instruction = prompt.instruction;
+  if (typeof instruction !== 'string') return null;
+  const trimmed = instruction.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
  * `presented_choices` is passed to the registry — and from there to the screen — in the server's
  * order, untouched. The server sorts lexicographically, so a child may see 10, 3, 9; that is a
  * backend issue tracked separately, and re-sorting here would be the client transforming server
@@ -121,6 +140,7 @@ export function planPresentation(
     kind: 'render',
     spec,
     stem,
+    instruction: readPromptInstruction(presentation.prompt),
     promptPayload: presentation.prompt,
     skillLabel: formatSkillLabel(presentation.skill_id),
     skillId: presentation.skill_id,
@@ -202,8 +222,16 @@ export type ResultsView = { headline: string; detail: string };
  * The reason is governance, not minimalism. The backend deliberately withholds an evaluative
  * summary from the child-facing surface; a client that assembled one from responses it happened to
  * see would be synthesising exactly the thing that was withheld — a governance violation wearing
- * the costume of a helpful feature. A child who got everything wrong and a child who got everything
- * right see the identical screen, by design.
+ * the costume of a helpful feature.
+ *
+ * SCOPE NARROWED 2026-10-20, and the narrowing is the point. The owner has ruled that the results
+ * SCREEN may also draw per-skill mastery bars showing what moved during the session, so it is no
+ * longer true that two children see an identical screen. THIS FUNCTION's guarantee is unchanged
+ * and still enforced: the COPY — headline and detail — is byte-identical for every outcome
+ * history, carries no score, and never reads `outcomeHistory`. The bars are drawn from the
+ * server's own `p_l` values fetched separately (session-mastery-change.ts), never from responses
+ * this client observed, which is the distinction that keeps the original rule intact where it
+ * still applies. Do not derive anything evaluative from `outcomeHistory` here.
  *
  * Passing the history in and ignoring it makes that testable: a unit test asserts the copy is
  * byte-identical across every outcome history, which is the strongest available guard that nothing

@@ -148,6 +148,11 @@ test('isPendingSessionCommand fails closed when kind is absent entirely', () => 
   assert.equal(isPendingSessionCommand(withoutKind), false);
 });
 
+// Every store call is now subject-scoped (B3). A fixed subject keeps these cases testing what they
+// always tested -- round-tripping and corruption handling -- while the scoping behaviour itself is
+// covered by session-command-store-scoping.test.ts.
+const SUBJECT = 'subject-aaaaaaaa-1111-2222-3333-444444444444';
+
 const variants: {
   name: string;
   command:
@@ -164,45 +169,45 @@ const variants: {
 
 for (const { command, name } of variants) {
   test(`pending command store round-trips a ${name} command via the web Map backend`, async () => {
-    await clearPendingCommand();
-    await savePendingCommand(command);
-    const loaded = await loadPendingCommand();
+    await clearPendingCommand(SUBJECT);
+    await savePendingCommand(SUBJECT, command);
+    const loaded = await loadPendingCommand(SUBJECT);
     assert.deepEqual(loaded, command);
-    await clearPendingCommand();
-    assert.equal(await loadPendingCommand(), null);
+    await clearPendingCommand(SUBJECT);
+    assert.equal(await loadPendingCommand(SUBJECT), null);
   });
 }
 
 test('a submit_response body survives save -> load byte-identical (fingerprint-critical)', async () => {
-  await clearPendingCommand();
-  await savePendingCommand(submitResponseCommand);
-  const loaded = await loadPendingCommand();
+  await clearPendingCommand(SUBJECT);
+  await savePendingCommand(SUBJECT, submitResponseCommand);
+  const loaded = await loadPendingCommand(SUBJECT);
   assert.ok(loaded && loaded.kind === 'submit_response');
   assert.deepEqual(loaded.body, submitResponseCommand.body);
   assert.equal(JSON.stringify(loaded.body), JSON.stringify(submitResponseCommand.body));
-  await clearPendingCommand();
+  await clearPendingCommand(SUBJECT);
 });
 
 for (const { command, name } of variants) {
   test(`pending command store discards a corrupt stored ${name} payload rather than replaying it`, async () => {
-    await clearPendingCommand();
+    await clearPendingCommand(SUBJECT);
     const corrupted = { ...command, kind: 'not_a_real_kind' };
-    await savePendingCommand(corrupted as never);
-    const loaded = await loadPendingCommand();
+    await savePendingCommand(SUBJECT, corrupted as never);
+    const loaded = await loadPendingCommand(SUBJECT);
     assert.equal(loaded, null);
   });
 }
 
 test('loadActiveSessionId round-trips a saved session id', async () => {
-  await clearActiveSessionId();
-  await saveActiveSessionId('session-abc-123');
-  assert.equal(await loadActiveSessionId(), 'session-abc-123');
-  await clearActiveSessionId();
-  assert.equal(await loadActiveSessionId(), null);
+  await clearActiveSessionId(SUBJECT);
+  await saveActiveSessionId(SUBJECT, 'session-abc-123');
+  assert.equal(await loadActiveSessionId(SUBJECT), 'session-abc-123');
+  await clearActiveSessionId(SUBJECT);
+  assert.equal(await loadActiveSessionId(SUBJECT), null);
 });
 
 test('loadActiveSessionId discards a corrupt (empty-string) stored value', async () => {
-  await clearActiveSessionId();
-  await saveActiveSessionId('');
-  assert.equal(await loadActiveSessionId(), null);
+  await clearActiveSessionId(SUBJECT);
+  await saveActiveSessionId(SUBJECT, '');
+  assert.equal(await loadActiveSessionId(SUBJECT), null);
 });

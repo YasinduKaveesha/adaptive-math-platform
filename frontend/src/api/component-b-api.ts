@@ -1,12 +1,14 @@
 import type { HealthReadyResponse, SessionCommandResponse } from '@/src/api/contracts';
-import { requestJson } from '@/src/api/client';
+import { requestJson } from '@/src/api/request';
 import { ApiClientError } from '@/src/api/errors';
 import {
   isActiveSessionResponse,
   isAttemptResponse,
   isHealthReadyResponse,
   isHintRequestResponse,
+  isLearnerSkillStatesResponse,
   isOpportunityAdvanceResponse,
+  isPresentationAckResponse,
   isOpportunityPresentationResponse,
   isSessionCommandResponse,
   isSessionStandingResponse,
@@ -15,8 +17,10 @@ import type {
   ActiveSessionResponse,
   AttemptResponse,
   HintRequestResponse,
+  LearnerSkillStatesResponse,
   OpportunityAdvanceResponse,
   OpportunityPresentationResponse,
+  PresentationAckResponse,
   SessionStandingResponse,
 } from '@/src/api/generated/openapi-types';
 import type { PublicConfig } from '@/src/config/env';
@@ -54,7 +58,13 @@ type ComponentBApi = {
   checkReadiness: () => Promise<HealthReadyResponse>;
   startSession: (idempotencyKey: string, accessToken: string) => Promise<SessionCommandResponse>;
   getActiveSession: (accessToken: string) => Promise<ActiveSessionResponse>;
+  getLearnerSkillStates: (accessToken: string) => Promise<LearnerSkillStatesResponse>;
   selectOpportunity: (sessionId: string, accessToken: string) => Promise<OpportunityPresentationResponse>;
+  acknowledgePresentation: (
+    sessionId: string,
+    itemOpportunityId: string,
+    accessToken: string,
+  ) => Promise<PresentationAckResponse>;
   submitResponse: (
     sessionId: string,
     itemOpportunityId: string,
@@ -136,6 +146,12 @@ function createFixtureApi(fixture: string): ComponentBApi {
     async getActiveSession() {
       throw new ApiClientError('unavailable', 'The development fixture does not implement session recovery.');
     },
+    async getLearnerSkillStates() {
+      throw new ApiClientError('unavailable', 'The development fixture does not implement skill states.');
+    },
+    async acknowledgePresentation() {
+      throw new ApiClientError('unavailable', 'The development fixture does not implement presentation acknowledgement.');
+    },
     async selectOpportunity() {
       throw new ApiClientError('unavailable', 'The development fixture does not implement opportunity selection.');
     },
@@ -177,6 +193,22 @@ export function createComponentBApi(config?: PublicConfig): ComponentBApi {
         method: 'GET',
         path: '/api/v1/b/sessions/active',
         validate: isActiveSessionResponse,
+      }),
+    acknowledgePresentation: (sessionId, itemOpportunityId, accessToken) =>
+      // No idempotency key and no body, matching the route: the first call anchors the clock and
+      // every later one returns that same deadline, so a retry is safe by construction.
+      requestJson(config, {
+        accessToken,
+        method: 'POST',
+        path: `/api/v1/b/sessions/${sessionId}/opportunities/${itemOpportunityId}/presented`,
+        validate: isPresentationAckResponse,
+      }),
+    getLearnerSkillStates: (accessToken) =>
+      requestJson(config, {
+        accessToken,
+        method: 'GET',
+        path: '/api/v1/b/learner/skill-states',
+        validate: isLearnerSkillStatesResponse,
       }),
     selectOpportunity: (sessionId, accessToken) =>
       // No idempotency key and no body, deliberately: this re-issues the session's already-OPEN

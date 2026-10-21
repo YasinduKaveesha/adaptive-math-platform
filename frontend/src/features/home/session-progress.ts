@@ -67,9 +67,23 @@ export function derivePathNodeStates(
 ): PathNodeState[] {
   const positions = Math.max(0, Math.trunc(availablePositions));
   if (state.kind === 'not-in-progress') {
-    // Neutral and unfilled: no node is "current", because nothing is in progress. Notably this is
-    // also what a brand-new learner sees, on purpose — see combineHomeSessionState.
-    return Array.from({ length: positions }, () => 'pending');
+    // The FIRST node is current; the rest are pending.
+    //
+    // It used to be pending all the way down, on the reasoning that nothing is in progress so
+    // nothing is "current". That was true about the session and wrong about the child: `current`
+    // is the only state the panel draws a play control for, and the only one it makes pressable,
+    // so a learner with no session in progress had five inert circles and no way into a game from
+    // the path at all. They had to scroll back up to the hero to find the button. After finishing
+    // a session -- exactly when the panel resets to this state -- that is the dead end they land
+    // on.
+    //
+    // It is also honest rather than a convenient lie: question 1 IS what this learner plays next,
+    // because a session starts at its first question. The screen says so in its own words, and
+    // always did -- the node's accessibility hint already read "Opens session preparation" for
+    // this case, a branch that could never run until now.
+    return Array.from({ length: positions }, (_unused, index) =>
+      index === 0 ? 'current' : 'pending',
+    );
   }
   const count = Math.min(state.totalBound, positions);
   const completed = Math.min(Math.max(state.completed, 0), count);

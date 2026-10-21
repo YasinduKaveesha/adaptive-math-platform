@@ -9,25 +9,32 @@
 // question, but it is not this extraction's to answer, and it is not answered here.
 //
 // The brand wordmark that used to sit here is gone; the battery reads `level`/`maxLevel` from
-// AdventureChargeProvider (the (learner) layout wraps every screen that renders this bar), and the
-// "Play Adventure" pill renders from the SAME provider's `pillVisible` -- the tab bar's Play button
-// is what sets it, in a different component entirely, which is the whole reason this is a shared
-// context rather than a prop each screen would otherwise have to thread through by hand.
+// AdventureChargeProvider (the (learner) layout wraps every screen that renders this bar). The
+// "Play Adventure" pill also used to render here, from the same provider's `pillVisible`; it moved
+// to learner-tab-bar.tsx on 2026-09-27 so it appears next to the Play button that raises it,
+// rather than at the opposite end of the screen from it. The shared context is still what makes
+// that work: the button setting the flag and the pill reading it are different components.
 //
 // The two height constants below are the ones home measures its viewport against
 // (`fixedHeaderHeight = compact ? 63 : 88`). They live here, next to the styles that produce them,
 // so a change to the padding and a change to the number a caller subtracts cannot drift apart.
 // The game hub sizes its grid against the same pair.
 
-import { StyleSheet, View } from 'react-native';
+import { router } from 'expo-router';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import { AppText } from '@/src/components/app-text';
+import {
+  LEARNER_HEADER_HEIGHT,
+  LEARNER_HEADER_HEIGHT_COMPACT,
+} from '@/src/features/navigation/chrome-metrics';
 import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 
-/** Rendered height of this bar, per density. Callers that must not scroll subtract it. */
-export const LEARNER_HEADER_HEIGHT = 88;
-export const LEARNER_HEADER_HEIGHT_COMPACT = 63;
+// Re-exported so this bar's existing callers keep importing them from the component that draws
+// them; the values themselves live in chrome-metrics.ts, which imports nothing and therefore
+// cannot be part of a require cycle. See that file for the cycle this broke.
+export { LEARNER_HEADER_HEIGHT, LEARNER_HEADER_HEIGHT_COMPACT };
 
 function AdventureBattery({ compact, level, maxLevel }: { compact: boolean; level: number; maxLevel: number }) {
   return (
@@ -56,7 +63,7 @@ export function LearnerHeaderBar({
   compact?: boolean;
   displayName: string;
 }) {
-  const { level, maxLevel, pillVisible } = useAdventureCharge();
+  const { level, maxLevel } = useAdventureCharge();
 
   return (
     <View style={[styles.headerGreetingSection, compact && styles.sectionCompact]}>
@@ -65,22 +72,42 @@ export function LearnerHeaderBar({
           <AdventureBattery compact={compact} level={level} maxLevel={maxLevel} />
         </View>
 
-        <View style={styles.pillSlot}>
-          {pillVisible ? (
-            <View accessibilityLiveRegion="polite" accessibilityRole="alert" style={styles.pill}>
-              <AppText style={styles.pillText}>Play Adventure</AppText>
-            </View>
-          ) : null}
-        </View>
+        {/* The "Play Adventure" pill used to sit here, centred between the battery and the
+            greeting. It now renders above the tab bar (learner-tab-bar.tsx), next to the Play
+            button that raises it, on owner instruction (2026-09-27). What stays is the spacer:
+            it is what pushes the greeting to the right edge, so removing it as well would have
+            slid the name back against the battery. */}
+        <View style={styles.headerSpacer} />
 
-        <View style={styles.greeting}>
+        {/* THE GREETING IS THE WAY TO THE PROFILE (owner request). A child's own name is the most
+            recognisable thing on this screen, and tapping yourself to get to your own page is a
+            shorter path than finding it in the tab bar -- which matters more now that the tab is
+            no longer labelled "Profile".
+
+            `replace`, not `push`, so it behaves EXACTLY as pressing the profile tab does. A
+            `push` here would stack home underneath profile, and the two routes to the same screen
+            would then leave the back gesture doing different things depending on which one the
+            child happened to take.
+
+            This file's header calls it a presentation component, and that is about NAME
+            RESOLUTION -- it resolves no name of its own, and still does not. It already reads
+            AdventureChargeProvider, so it is not markup-only. Navigating is hardcoded rather than
+            taken as a prop because both callers (home and the game hub) want the same
+            destination; a prop would be two call sites of ceremony for one behaviour. */}
+        <Pressable
+          accessibilityHint="Opens your profile"
+          accessibilityLabel={`Hi, ${displayName}`}
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => router.replace('/(learner)/profile')}
+          style={({ pressed }) => [styles.greeting, pressed && styles.greetingPressed]}>
           <AppText style={[styles.greetingTitle, compact && styles.greetingTitleCompact]}>
             Hi,{' '}
             <AppText style={[styles.greetingName, compact && styles.greetingNameCompact]}>
               {displayName}!
             </AppText>
           </AppText>
-        </View>
+        </Pressable>
       </View>
     </View>
   );
@@ -105,6 +132,7 @@ const styles = StyleSheet.create({
   batteryNub: { backgroundColor: '#F4F4F6', borderRadius: 1, height: 12, width: 4 },
   brand: { alignItems: 'center', flexDirection: 'row', flexShrink: 1, gap: 3 },
   greeting: { alignItems: 'flex-end', flexShrink: 1, justifyContent: 'center' },
+  greetingPressed: { opacity: 0.6 },
   greetingName: { color: '#26A5FD', fontFamily: typography.fonts.heavy, fontSize: 33.75, lineHeight: 40.5 },
   greetingNameCompact: { fontSize: 28.35, lineHeight: 33.75 },
   greetingTitle: { fontFamily: typography.fonts.body, fontSize: 25, lineHeight: 30 },
@@ -118,15 +146,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.smPlus,
     zIndex: 10,
   },
-  pill: {
-    backgroundColor: '#F4F4F6',
-    borderColor: colors.accentGreen,
-    borderRadius: radius.pill,
-    borderWidth: 2,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  pillSlot: { alignItems: 'center', flex: 1, justifyContent: 'center' },
-  pillText: { color: colors.accentGreen, fontSize: 14, fontWeight: '900', letterSpacing: 0.3 },
+  headerSpacer: { flex: 1 },
   sectionCompact: { height: LEARNER_HEADER_HEIGHT_COMPACT },
 });

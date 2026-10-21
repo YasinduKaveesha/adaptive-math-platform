@@ -46,7 +46,9 @@ import { accentForGameFamily } from '@/src/features/c-session/game-family-accent
 import { ANIMATION_DURATION_MS, HIT_SLOP, TOKEN_SPACING, TOKEN_TOUCH_TARGET_SIZE } from '@/src/features/c-session/motor-constants';
 import { DigitKeypad } from '@/src/features/c-session/primitives/digit-keypad';
 import { ObjectPool } from '@/src/features/c-session/primitives/object-pool';
+import { TaskPromptCard } from '@/src/features/c-session/task-prompt-card';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { TASK_SURFACE_PADDING } from '@/src/features/c-session/task-layout';
 
 // C-CC-02's target_n token, enlarged 60% over the plain TOKEN_TOUCH_TARGET_SIZE (2026-08-26
 // request) -- matching value-report-surface.tsx's own PAYLOAD_TOKEN_SIZE precedent exactly. No
@@ -213,9 +215,13 @@ function SelectAndCountScene({ accent, onSubmit, spec, totalKey }: SelectAndCoun
   if (!usesStagedFlow) {
     return (
       <View style={styles.container}>
-        <AppText style={styles.promptText} variant="title">
-          {spec.promptText}
-        </AppText>
+        {/* The card holds the question alone here: what sits below it is the answer
+            surface itself -- the child drags or taps it -- not something they only look at. */}
+        <TaskPromptCard>
+          <AppText style={styles.promptText} variant="title">
+            {spec.promptText}
+          </AppText>
+        </TaskPromptCard>
 
         <ObjectPool accent={accent} objectIds={spec.objectIds} onToggle={handleToggle} scrollable={false} selectedIds={selectedIds} />
 
@@ -228,9 +234,13 @@ function SelectAndCountScene({ accent, onSubmit, spec, totalKey }: SelectAndCoun
 
   return (
     <View style={styles.container}>
-      <AppText style={styles.promptText} variant="title">
-        {spec.promptText}
-      </AppText>
+      {/* The card holds the question alone here: what sits below it is the answer
+          surface itself -- the child drags or taps it -- not something they only look at. */}
+      <TaskPromptCard>
+        <AppText style={styles.promptText} variant="title">
+          {spec.promptText}
+        </AppText>
+      </TaskPromptCard>
 
       {phase === 'selecting' && (
         <>
@@ -315,9 +325,13 @@ function PlaceIntoBoxScene({ accent, onSubmit, spec }: PlaceIntoBoxSceneProps) {
 
   return (
     <View style={[styles.container, styles.placeIntoBoxContainer]}>
-      <AppText style={styles.promptText} variant="title">
-        {spec.promptText}
-      </AppText>
+      {/* The card holds the question alone here: what sits below it is the answer
+          surface itself -- the child drags or taps it -- not something they only look at. */}
+      <TaskPromptCard>
+        <AppText style={styles.promptText} variant="title">
+          {spec.promptText}
+        </AppText>
+      </TaskPromptCard>
 
       {spec.targetValue !== null && (
         <View style={styles.answerRow}>
@@ -435,7 +449,7 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: spacing.lg,
     justifyContent: 'space-between',
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   // Overrides `container`'s own `justifyContent: 'space-between'` for the place-into-box scene only
   // (2026-08-26 request): the box is now unbounded and grows with `placed.length`

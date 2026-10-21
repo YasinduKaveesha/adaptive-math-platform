@@ -79,3 +79,24 @@ class ClassroomListItem(StrictModel):
 class ClassroomListResponse(StrictModel):
     classrooms: list[ClassroomListItem]
     request_id: str
+
+
+class ClassroomDeleteRequest(StrictModel):
+    """The classroom name, typed by the teacher, as the confirmation for deleting it."""
+
+    confirmation_name: str
+
+    @field_validator("confirmation_name")
+    @classmethod
+    def valid_confirmation(cls, value: str) -> str:
+        if len(value) > 255:
+            raise ValueError("confirmation_name must contain at most 255 characters")
+        return value
+
+
+class ClassroomDeleteResponse(StrictModel):
+    classroom_id: UUID
+    deleted_at_utc: datetime
+    removed_membership_count: int
+    row_version: int
+    request_id: str

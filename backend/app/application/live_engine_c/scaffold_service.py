@@ -24,7 +24,7 @@ separately by an AST guard in ``tests/test_be2_architecture_guards.py``.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Optional, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +61,7 @@ async def decide_and_persist_scaffold_level(
     scaffold_config: ScaffoldConfig,
     safety_forces_recovery: bool,
     request_id: str,
+    events: Optional[Sequence[CGameplayEventRecord]] = None,
 ) -> ScaffoldLevel:
     """Decides the scaffold level for the CURRENT task opportunity from the real, persisted
     event stream (never a caller-asserted count) and logs one ``c_scaffold_events`` row (Z5-f;
@@ -69,8 +70,8 @@ async def decide_and_persist_scaffold_level(
     the same test-side-construction discipline T4-d already established -- this function's own
     job is the ORDINARY escalation path, wired to real data; it does not itself assemble a full
     safety evidence/adaptation decision, which is Criterion 1's own domain, unchanged)."""
-    event_repo = CGameplayEventRecordRepository(session)
-    events = await event_repo.list_ordered_for_instance(c_task_instance_id)
+    if events is None:      # PERF-01: submit_action passes the stream it already holds under the instance lock
+        events = await CGameplayEventRecordRepository(session).list_ordered_for_instance(c_task_instance_id)
     consecutive_incorrect = _consecutive_incorrect(events)
     context = ScaffoldDecisionContext(
         consecutive_incorrect_current_task=consecutive_incorrect,

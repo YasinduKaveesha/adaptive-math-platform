@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
+import { artwork } from '@/src/utils/artwork';
 import { createLearnerProfile } from '@/src/api/learner-onboarding-api';
 import { ApiClientError } from '@/src/api/errors';
 import { useAuth } from '@/src/auth/auth-context';
@@ -14,7 +15,7 @@ import { readPublicConfig } from '@/src/config/env';
 import { colors, radius, spacing } from '@/src/theme/tokens';
 import { firstNameOf } from '@/src/utils/display-name';
 
-const brandWordmark = require('../../../assets/images/mathmingo-header.png');
+const brandWordmark = artwork.mathmingoHeader;
 
 export function FirstTimeWelcomeScreen() {
   const palette = colors;

@@ -35,7 +35,9 @@ import { accentForGameFamily } from '@/src/features/c-session/game-family-accent
 import { HIT_SLOP, TOKEN_SPACING, TOKEN_TOUCH_TARGET_SIZE } from '@/src/features/c-session/motor-constants';
 import { BooleanToggle } from '@/src/features/c-session/primitives/boolean-toggle';
 import { DigitKeypad } from '@/src/features/c-session/primitives/digit-keypad';
+import { TaskPromptCard } from '@/src/features/c-session/task-prompt-card';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { TASK_SURFACE_PADDING } from '@/src/features/c-session/task-layout';
 
 // The payload tokens are a passive, read-only display -- not a touch target -- so sizing them apart
 // from TOKEN_TOUCH_TARGET_SIZE does not reopen the motor-constancy question that constant exists to
@@ -108,10 +110,13 @@ function ValueReportScene({ accent, onSubmit, spec }: ValueReportSceneProps) {
 
   return (
     <View style={styles.container}>
-      <AppText style={styles.promptText} variant="title">
-        {spec.promptText}
-      </AppText>
-      <View style={styles.payloadRow}>
+      {/* Question and the values it reports on, in one card. The keypad, toggles and SUBMIT
+          below are the answer surface and stay on the ground. */}
+      <TaskPromptCard>
+        <AppText style={styles.promptText} variant="title">
+          {spec.promptText}
+        </AppText>
+        <View style={styles.payloadRow}>
         {spec.payloadValues.map((payloadValue, index) => (
           <View key={`${payloadValue.key}-${index}`} style={styles.payloadColumn}>
             <View style={styles.payloadLabelBlock}>
@@ -129,8 +134,9 @@ function ValueReportScene({ accent, onSubmit, spec }: ValueReportSceneProps) {
           <View style={styles.payloadToken}>
             <AppText style={styles.payloadTokenText}>{buffer.length === 0 ? ANSWER_PLACEHOLDER : buffer}</AppText>
           </View>
+          </View>
         </View>
-      </View>
+      </TaskPromptCard>
       <View>
         <DigitKeypad
           onDelete={() => setBuffer((prev) => prev.slice(0, -1))}
@@ -177,7 +183,7 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: spacing.lg,
     justifyContent: 'space-between',
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   payloadColumn: {
     // `flex: 1` on every column -- given values AND the answer alike -- so the row divides itself

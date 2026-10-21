@@ -74,7 +74,7 @@ def test_structured_completion_log_contains_request_id() -> None:
     from app.core.logging import JsonFormatter
 
     handler.setFormatter(JsonFormatter())
-    logger = logging.getLogger("upadya.http")
+    logger = logging.getLogger("studentapp.http")
     logger.addHandler(handler)
     try:
         TestClient(app).get("/health/live", headers={"X-Request-ID": "log-123"})

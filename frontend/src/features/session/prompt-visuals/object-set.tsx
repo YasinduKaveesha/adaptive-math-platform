@@ -2,6 +2,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { AppText } from '@/src/components/app-text';
 import type { ObjectSetVisual } from '@/src/features/session/prompt-visuals/types';
+import { labelForCountableEmoji, pickCountableEmoji } from '@/src/utils/countable-emoji';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 
 // A set of discrete countable objects — the `pictorial_objects` / `dot_sets` representation the
@@ -16,8 +17,12 @@ import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 
 const OBJECT_SIZE = 30;
 
-export function ObjectSet({ visual }: { visual: ObjectSetVisual }) {
+export function ObjectSet({ seed, visual }: { seed: string; visual: ObjectSetVisual }) {
   const objects = Array.from({ length: visual.count });
+  // One emoji for the whole set -- see utils/countable-emoji.ts. Identical objects are what keeps
+  // this a counting item rather than a sorting one.
+  const emoji = pickCountableEmoji(seed);
+  const emojiLabel = labelForCountableEmoji(emoji);
 
   return (
     <View
@@ -33,19 +38,15 @@ export function ObjectSet({ visual }: { visual: ObjectSetVisual }) {
       // that — the construct itself is visual. Whether those learners are in scope is a
       // study-design question for the research protocol owner, not something a label string can
       // settle.
-      accessibilityLabel="A group of circles to count"
+      accessibilityLabel="A group of objects to count"
       style={styles.tray}>
       {visual.count === 0 ? (
         <AppText style={styles.empty}>No objects</AppText>
       ) : (
         objects.map((_, index) => (
-          <View
-            accessibilityLabel="Circle"
-            accessibilityRole="image"
-            accessible
-            key={index}
-            style={styles.object}
-          />
+          <View accessibilityLabel={emojiLabel} accessibilityRole="image" accessible key={index}>
+            <AppText style={styles.glyph}>{emoji}</AppText>
+          </View>
         ))
       )}
     </View>
@@ -55,17 +56,9 @@ export function ObjectSet({ visual }: { visual: ObjectSetVisual }) {
 export const objectSetStyles = { OBJECT_SIZE };
 
 const styles = StyleSheet.create({
+  glyph: { fontSize: OBJECT_SIZE, lineHeight: Math.round(OBJECT_SIZE * 1.25) },
   empty: { color: colors.textSecondary, fontFamily: typography.fonts.bold },
-  object: {
-    backgroundColor: colors.accentBlue,
-    borderColor: colors.surface1,
-    // A circle: half the side length. Distinct, separated shapes with no overlap — `gap` guarantees
-    // the separation rather than relying on margins that could collapse.
-    borderRadius: OBJECT_SIZE / 2,
-    borderWidth: 2,
-    height: OBJECT_SIZE,
-    width: OBJECT_SIZE,
-  },
+
   tray: {
     alignItems: 'center',
     backgroundColor: colors.secondarySoft,

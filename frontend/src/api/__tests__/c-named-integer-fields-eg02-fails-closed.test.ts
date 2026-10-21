@@ -61,11 +61,14 @@ test('difficulty 1-4 carry direction "read"; difficulty 5 alone carries "build",
   assert.deepEqual(directions, ['read', 'read', 'read', 'read', 'build']);
 });
 
-test('difficulty 5\'s prompt_text differs from L1-4\'s ("Build the array shown." vs the "Tell how many..." copy) and both survive resolution unchanged', () => {
+test('difficulty 5\'s prompt_text differs from L1-4\'s (the build variant vs the read one) and both survive resolution unchanged', () => {
   const l4 = EG02_ENTRIES[3]!;
   const l5 = EG02_ENTRIES[4]!;
   assert.notEqual(l4.prompt_text, l5.prompt_text);
-  assert.equal(l5.prompt_text, 'Build the array shown.');
+  // Asserted by VARIANT, not by literal wording: this test is about resolution, and pinning
+  // the sentence made a content edit fail it. The copy is pinned by the backend artefact.
+  assert.equal((l5.prompt_payload as { direction: string }).direction, 'build');
+  assert.equal((l4.prompt_payload as { direction: string }).direction, 'read');
   const specL4 = resolveNamedIntegerFieldsSpec(makeTask(l4));
   const specL5 = resolveNamedIntegerFieldsSpec(makeTask(l5));
   assert.notEqual(specL4, null);

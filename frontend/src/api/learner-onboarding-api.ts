@@ -6,7 +6,7 @@ import type {
   MembershipRequestResponse,
   ProfileCreateRequest,
 } from '@/src/api/contracts';
-import { requestJson } from '@/src/api/client';
+import { requestJson } from '@/src/api/request';
 import {
   isInviteResolveResponse,
   isLearnerMembershipListResponse,

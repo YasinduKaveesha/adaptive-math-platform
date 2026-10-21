@@ -35,21 +35,25 @@
 //
 // VISUAL TREATMENT matches Component B's own per-question outcome popup
 // (live-session-screen.tsx's `outcomePopup`/`outcomeIcon`/`outcomeCorrect`/`outcomeIncorrect`)
-// exactly on request: same BlurView technique, same icon choice (checkmark / heart-outline), same
-// success/accentRed colouring, same ZoomIn entrance. This is a STYLING match only -- it changes
+// exactly on request: same icon choice (checkmark / heart-outline), same
+// success/accentRed colouring, same ZoomIn entrance. B's version sits on a FrostedScrim; this one
+// deliberately does NOT, since 2026-10-10 -- Component C's task card carries a background image and
+// the blur is applied to that image directly, leaving this panel transparent. That is the one point
+// where the two components' verdicts differ, and it is a consequence of C having artwork B has not.
+// This is a STYLING match only -- it changes
 // nothing about which text is shown (still the neutral, non-punitive copy flagged above) and
 // nothing about placement: this panel still renders INSTEAD OF the archetype surface, never
 // alongside it, so the double-submission guarantee this file's own docstring opens with is
 // completely unaffected by how it looks.
 
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import { Pressable, StyleSheet, View } from 'react-native';
 import Animated, { ZoomIn } from 'react-native-reanimated';
 
 import { AppText } from '@/src/components/app-text';
 import { HIT_SLOP } from '@/src/features/c-session/motor-constants';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { TASK_SURFACE_PADDING } from '@/src/features/c-session/task-layout';
 
 export type AnswerFeedbackPanelProps = {
   matched: boolean;
@@ -62,8 +66,16 @@ export type AnswerFeedbackPanelProps = {
 export function AnswerFeedbackPanel({ matched, onNext, onTryAgain, scaffoldLevel }: AnswerFeedbackPanelProps) {
   return (
     <View style={styles.container}>
+      {/* NO BACKGROUND AND NO BLUR LAYER HERE, deliberately (owner instruction, 2026-10-10).
+          
+          This panel is fully transparent: the verdict's icon, its text and the action button sit
+          directly on the task card. The blur the child sees belongs to the card's own background
+          IMAGE, applied as that Image's `blurRadius` in c-session-screen.tsx -- see the note there.
+          
+          Every attempt to produce the effect from this side instead (a scrim band, a frosted
+          popup, a full-area overlay) tinted the card, because expo-blur ties its blur radius and
+          its white backgroundColor to one `intensity` value. Do not reintroduce a scrim here. */}
       <View style={styles.popupCenter}>
-        <BlurView intensity={40} style={styles.popupBackdrop} tint="light" />
         <Animated.View
           entering={ZoomIn.duration(280).springify().damping(14)}
           style={[styles.popup, matched ? styles.popupCorrect : styles.popupIncorrect]}>
@@ -117,7 +129,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'space-between',
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   // Every value below mirrors live-session-screen.tsx's own outcomePopup/outcomeIcon/outcomeCorrect
   // /outcomeIncorrect/outcomeText styles exactly, on request -- same blur intensity/tint, same
@@ -135,7 +147,7 @@ const styles = StyleSheet.create({
     shadowRadius: 50,
     width: '80%',
   },
-  popupBackdrop: { bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
+
   popupCenter: { alignItems: 'center', flex: 1, justifyContent: 'center', position: 'relative' },
   popupCorrect: { shadowColor: '#e9f8f1' },
   popupIncorrect: { shadowColor: colors.secondarySoft },

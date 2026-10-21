@@ -49,7 +49,6 @@ from app.domain.live_engine.errors import LiveEngineError
 from app.domain.principal import AuthenticatedPrincipal
 from app.infrastructure.persistence_models import AppUser, AttemptRecord, IdempotencyRecord, SkillStateTransitionRecord
 from app.infrastructure.repositories import (
-    AppUserLearnerLinkRepository,
     AppUserRepository,
     AttemptRepository,
     IdempotencyRecordRepository,
@@ -86,7 +85,7 @@ def provenance(user_id: UUID, request_id: str, operation: str, resource_type: st
         "resource_type": resource_type,
         "resource_id": resource_id,
         "source_class": "TEST",
-        "source_system": "upadya-api",
+        "source_system": "studentapp-api",
         "environment": "live-endpoint",
         "schema_revision": SCHEMA_REVISION,
     }
@@ -100,12 +99,12 @@ class AttemptSubmissionService:
         self._uow_factory = uow_factory
 
     async def _require_learner(self, session: AsyncSession, principal: AuthenticatedPrincipal) -> tuple[AppUser, UUID]:
-        user = await AppUserRepository(session).find_by_subject(principal.user_id)
-        if user is None:
+        found = await AppUserRepository(session).find_with_learner_link_by_subject(principal.user_id)
+        if found is None:
             raise ResourceNotFoundError()
+        user, link = found
         if user.profile_type != "LEARNER":
             raise ForbiddenError()
-        link = await AppUserLearnerLinkRepository(session).find_by_user(user.user_id)
         if link is None:
             raise ResourceNotFoundError()
         return user, link.learner_id
@@ -210,7 +209,38 @@ class AttemptSubmissionService:
 
         now = datetime.now(UTC)
         attempt_index = await AttemptRepository(session).count_for_opportunity(item_opportunity_id) + 1
-        is_timeout = now >= opportunity.timeout_deadline_utc
+        # A DEADLINE ONLY BINDS A LEARNER WHO WAS CONFIRMED TO HAVE SEEN THE QUESTION.
+        #
+        # `presented_at_utc is None` means no presentation acknowledgement ever landed, so the
+        # deadline still in force is the FAIL-SAFE one written at SELECTION. That clock measures
+        # server, prefetch and network time -- not the child's answering time. Judging a submission
+        # against it charges the child for infrastructure, which is precisely what
+        # `component-b-closure-decisions.json`'s timeout-policy ruling forbids and what
+        # `anchor_presentation` quotes verbatim: "infrastructure failure is never learner failure.
+        # Anchoring at selection charged the child for server and network time -- prefetch included
+        # -- which is exactly that."
+        #
+        # OBSERVED IN PRODUCTION, 2026-10-10, which is why this is not theoretical: an opportunity
+        # created at 13:00:09 with `presented_at_utc = NULL` and a deadline of created + 302s. The
+        # child opened it later, answered in about one second, and was shown "Time's up" -- on a
+        # question the system has no record of ever having shown them. Home warms Component B on
+        # mount, so the opportunity can be minted minutes before the child enters; the
+        # acknowledgement is what normally re-anchors the clock, and on a degraded network its four
+        # attempts over ~6s can all fail.
+        #
+        # SO: an unacknowledged opportunity cannot time out. We have no trustworthy origin from
+        # which to measure, and inventing one would be guessing against the child. The null
+        # `presented_at_utc` is left exactly as it is -- it IS the audit trail of why this
+        # submission was not treated as late.
+        #
+        # GOVERNANCE, STATED PLAINLY: this changes which attempts are eligible to become BKT
+        # observations. A first attempt that would previously have been recorded as `TIMEOUT`
+        # (contributing nothing) is now a `RESPONSE` (which, at `attempt_index == 1`, does observe).
+        # The first-attempt gate itself is untouched. By this module's own standard that makes the
+        # eligibility consequence a Gate B matter; it is recorded in buildLog2.md for the owner
+        # rather than left implicit in a one-line condition.
+        presentation_confirmed = opportunity.presented_at_utc is not None
+        is_timeout = presentation_confirmed and now >= opportunity.timeout_deadline_utc
 
         response_matched: bool | None = None
         # BF-2 — persist what the learner actually submitted, even on timeout.

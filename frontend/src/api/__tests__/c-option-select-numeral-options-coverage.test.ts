@@ -68,7 +68,11 @@ test('negative control: a one-character-altered prompt_text is NOT reported as i
   const entry = EXEMPLAR_ENTRIES.find((candidate) => candidate.game_task_template_id === 'C-MCL-01')!;
   const spec = resolveOptionSelectSpec(makeTask(entry));
   assert.notEqual(spec, null);
-  const alteredPromptText = `${entry.prompt_text.slice(0, -1)}?`;
+  // Swap the final character for a DIFFERENT one. Appending '?' unconditionally stopped
+  // altering anything once prompts began ending in '?' themselves (the 2026-09-28 ESL
+  // rewrite), so the control passed vacuously -- the exact failure it exists to rule out.
+  const lastCharacter = entry.prompt_text.slice(-1);
+  const alteredPromptText = `${entry.prompt_text.slice(0, -1)}${lastCharacter === '?' ? '.' : '?'}`;
   assert.notEqual(spec!.promptText, alteredPromptText);
 });
 

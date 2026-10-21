@@ -123,7 +123,10 @@ from component_c_generator.policy.rule_based import (
 from component_c_generator.rewards import (
     decide_child_facing_reward as _pkg_decide_child_facing_reward,
 )
-from component_c_generator.safety.controller import apply_safety as _pkg_apply_safety
+from component_c_generator.safety.controller import (
+    SAFETY_CONTROLLER_VERSION as _PKG_SAFETY_CONTROLLER_VERSION,
+    apply_safety as _pkg_apply_safety,
+)
 from component_c_generator.scaffolds.ladder import (
     decide_scaffold_level as _pkg_decide_scaffold_level,
 )
@@ -292,6 +295,10 @@ def _map_catalogue(catalogue) -> Catalogue:
         families=tuple(_map_game_family(f) for f in catalogue.families),
         templates=tuple(_map_game_task_template(t) for t in catalogue.templates),
     )
+
+
+_PROPOSABLE_ACTIONS = ("decrease_difficulty", "hold", "increase_difficulty")
+_KNOWN_POLICY_MODES = ("rule_based_baseline", "q_learning_offline", "frozen_q_evaluation")
 
 
 def _to_pkg_seed_lineage(lineage: SeedLineage):
@@ -1349,6 +1356,99 @@ class LiveEngineCAdapter:
             decision=_map_adaptation_decision(pkg_decision),
             activate_recovery_flag=pkg_safety_decision.activate_recovery_flag,
             request_safe_termination=pkg_safety_decision.request_safe_termination,
+        )
+
+    # ---- LIVE-01: externally proposed action (frozen Q policy) ---------------------------
+
+    def safety_controller_version(self) -> str:
+        """The pinned hard-safety controller's version string (for composing ``policy_version``)."""
+        return _PKG_SAFETY_CONTROLLER_VERSION
+
+    def preview_allowed_actions(
+        self,
+        *,
+        evidence: PolicyObservableEvidence,
+        current_difficulty_level: int,
+        safety_config: SafetyConfig,
+        selection_config: SelectionConfig,
+    ) -> tuple[str, ...]:
+        """The actions (in the order decrease, hold, increase) the pinned ``apply_safety`` would NOT override
+        for this evidence -- the ``allowed`` set the Q policy chooses among (as in training, where
+        ``DifficultyEnv.allowed_actions`` did exactly this). Never empty: if safety would override all
+        three, ``("hold",)`` is returned (training did the same), and safety then disposes of it."""
+        pkg_evidence = _to_pkg_policy_observable_evidence(evidence)
+        pkg_safety_config = _to_pkg_safety_config(safety_config)
+        pkg_selection_config = _to_pkg_selection_config(selection_config)
+        allowed = tuple(
+            action
+            for action in _PROPOSABLE_ACTIONS
+            if not _pkg_apply_safety(
+                selected_action=action,
+                evidence=pkg_evidence,
+                current_difficulty_level=current_difficulty_level,
+                selection_config=pkg_selection_config,
+                safety_config=pkg_safety_config,
+            ).action_overridden
+        )
+        return allowed or ("hold",)
+
+    def decide_with_proposed_action(
+        self,
+        *,
+        selected_action: str,
+        policy_mode: PolicyMode,
+        policy_version: str,
+        rl_state: Optional[Mapping[str, object]],
+        evidence: PolicyObservableEvidence,
+        current_difficulty_level: int,
+        seed_lineage: SeedLineage,
+        safety_config: SafetyConfig,
+        selection_config: SelectionConfig,
+    ) -> AdaptationDecisionWithSafetyFlags:
+        """Applies the pinned ``apply_safety`` to an action proposed OUTSIDE the pinned package (the frozen Q
+        policy) and composes the ``AdaptationDecision`` itself. The pinned ``decide_adaptation`` cannot be
+        used: it raises ``QLearningDisabledError`` for every non-rule ``policy_mode``.
+
+        Field-for-field this is what ``decide_adaptation`` composes for the same applied action (decision_id
+        from the seed lineage, applied/overridden/reason/difficulty_after/strain bucket/increase-block from the
+        safety decision, ``session_start_state_bucket`` = the evidence's prior session end state), except
+        ``policy_mode``, ``policy_version`` and ``rl_state``, which the caller supplies;
+        ``internal_reward`` stays ``None`` (frozen policy, no learning). The two flags
+        ``decide_adaptation`` drops (``activate_recovery_flag``, ``request_safe_termination``) come straight
+        from the same safety decision here -- no second reconstruction call is needed. Proven against the
+        rule path by ``tests/test_live01_q_adapter.py``."""
+        if selected_action not in _PROPOSABLE_ACTIONS:
+            raise UnknownPolicyModeError(f"unknown action {selected_action!r}")
+        if policy_mode not in _KNOWN_POLICY_MODES:
+            raise UnknownPolicyModeError(f"unknown policy_mode {policy_mode!r}")
+        safety = _pkg_apply_safety(
+            selected_action=selected_action,
+            evidence=_to_pkg_policy_observable_evidence(evidence),
+            current_difficulty_level=current_difficulty_level,
+            selection_config=_to_pkg_selection_config(selection_config),
+            safety_config=_to_pkg_safety_config(safety_config),
+        )
+        decision = AdaptationDecision(
+            decision_id=f"AD-{seed_lineage.seed:016x}",
+            policy_mode=policy_mode,
+            policy_version=policy_version,
+            rl_state=(dict(rl_state) if rl_state is not None else None),
+            selected_action=selected_action,
+            applied_action=safety.applied_action,
+            action_overridden=safety.action_overridden,
+            safety_reason=safety.safety_reason,
+            difficulty_before=current_difficulty_level,
+            difficulty_after=safety.difficulty_after,
+            rolling_strain_bucket=safety.rolling_strain_bucket,
+            session_start_state_bucket=evidence.prior_session_end_state,
+            increase_block_remaining=safety.increase_block_remaining_after,
+            internal_reward=None,
+            seed_lineage=seed_lineage,
+        )
+        return AdaptationDecisionWithSafetyFlags(
+            decision=decision,
+            activate_recovery_flag=safety.activate_recovery_flag,
+            request_safe_termination=safety.request_safe_termination,
         )
 
     # ---- ScaffoldPort ---------------------------------------------------------------

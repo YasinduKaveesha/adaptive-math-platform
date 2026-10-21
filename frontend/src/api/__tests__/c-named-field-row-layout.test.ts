@@ -3,7 +3,7 @@
 // OBJECT_TOKEN_SIZE), matching `value-report-surface.tsx`'s own payload-token size exactly (2026-08-26
 // correction: fields render in the SAME row as payload tokens, so the two must be the same size --
 // see named-field-row.tsx's own header). The row/wrap behaviour itself lives in the SURFACE
-// (payloadRow, `flexWrap: 'wrap'`), not in this primitive, since this file now exports state +
+// (valuesRow, `flexWrap: 'wrap'`), not in this primitive, since this file now exports state +
 // single-box rendering rather than owning a row.
 
 import { test } from 'node:test';
@@ -51,7 +51,11 @@ test('the fixed-row-count checker does NOT fire on the same fabricated string ke
 
 test('named-integer-fields-surface.tsx wraps its combined payload+field row (flexWrap), never a fixed grid', () => {
   const source = readFileSync(surfacePath, 'utf-8');
-  assert.match(source, /payloadRow:\s*\{[^}]*flexWrap:\s*'wrap'/s);
+  // `valuesRow` since 2026-10-10, when the given-value row and the entry row were merged into one
+  // line (the test's own name already described the combined row). The ASSERTION is unchanged:
+  // whatever holds that row must wrap rather than be a fixed grid, so a task with more quantities
+  // than fit reflows instead of overflowing the card.
+  assert.match(source, /valuesRow:\s*\{[^}]*flexWrap:\s*'wrap'/s);
 });
 
 test("named-field-row.tsx's field box size matches named-integer-fields-surface.tsx's payload token size exactly (same row, same size -- both TOKEN_TOUCH_TARGET_SIZE, no multiplier, so a 4-column row fits on one line)", () => {

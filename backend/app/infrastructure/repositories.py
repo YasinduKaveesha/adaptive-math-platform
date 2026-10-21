@@ -1,9 +1,10 @@
 """SQLAlchemy repositories for the twelve neutral BE2 tables."""
 
+from datetime import datetime
 from typing import Generic, Sequence, TypeVar
 from uuid import UUID
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence_models import (
@@ -12,6 +13,7 @@ from app.infrastructure.persistence_models import (
     CRuntimeBundleRecord, CSafetyEventRecord, CScaffoldEventRecord,
     CSessionRecord, CTaskInstanceRecord, CTaskOpportunityRecord, CTaskOpportunitySummaryRecord,
     CTaskOpportunityVerdictRecord,
+    DCognitiveProfileRecord, DInteractionRecord, DLearnerStateRecord,
     HintEventRecord, IdempotencyRecord,
     ItemOpportunityRecord, Learner, LearnerSkillStateRecord, PresentationTokenRecord,
     RuntimeBundleRecord, SessionAggregateResultRecord, SessionEvent, SessionRecord,
@@ -44,6 +46,31 @@ class AppUserRepository(SqlAlchemyNeutralRepository[AppUser]):
 
     async def find_by_subject(self, subject: str) -> AppUser | None:
         return await self.session.scalar(select(AppUser).where(AppUser.supabase_subject == subject))
+
+    async def find_with_learner_link_by_subject(
+        self, subject: str
+    ) -> tuple[AppUser, AppUserLearnerLink | None] | None:
+        """The app user and its learner link in ONE round trip.
+
+        Every authenticated learner request resolves the principal the same way: look the user up
+        by Supabase subject, then look its learner link up by user id. As two awaits that is two
+        sequential round trips before any real work begins, which against a remote database is
+        pure latency (~65ms each against ap-southeast-1) on every single request.
+
+        The join is OUTER so the three outcomes callers must distinguish stay distinguishable:
+        no row at all (unknown user), a row with no link (user exists, not yet a learner), and a
+        row with a link. Returning `None` vs `(user, None)` preserves exactly that, so callers
+        keep raising the same not-found/forbidden errors they raised with two queries.
+        """
+        result = await self.session.execute(
+            select(AppUser, AppUserLearnerLink)
+            .outerjoin(AppUserLearnerLink, AppUserLearnerLink.user_id == AppUser.user_id)
+            .where(AppUser.supabase_subject == subject)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        return row[0], row[1]
 
 
 class LearnerRepository(SqlAlchemyNeutralRepository[Learner]):
@@ -162,6 +189,25 @@ class CSessionRecordRepository(SqlAlchemyNeutralRepository[CSessionRecord]):
             )
         )
 
+    async def get_owned_for_subject(
+        self, c_session_id: UUID, subject: str, *, for_update: bool = False
+    ) -> CSessionRecord | None:
+        """PERF-01: ``AppUserRepository.find_with_learner_link_by_subject`` + ``get_owned`` in ONE round trip.
+
+        The session owned by the learner linked to the Supabase subject, or ``None`` when ANY of unknown user, user
+        without a learner link, or no such session for that learner holds -- the three cases every caller already turned into
+        the same ``ResourceNotFoundError``. Inner joins (not outer) so ``for_update`` can lock the session row: Postgres refuses
+        ``FOR UPDATE`` on the nullable side of an outer join. ``for_update`` takes the SAME row lock ``lock_for_update`` takes."""
+        stmt = (
+            select(CSessionRecord)
+            .join(AppUserLearnerLink, AppUserLearnerLink.learner_id == CSessionRecord.student_id)
+            .join(AppUser, AppUser.user_id == AppUserLearnerLink.user_id)
+            .where(CSessionRecord.c_session_id == c_session_id, AppUser.supabase_subject == subject)
+        )
+        if for_update:
+            stmt = stmt.with_for_update(of=CSessionRecord)
+        return await self.session.scalar(stmt)
+
 
 class CLearnerLocalStateRepository(SqlAlchemyNeutralRepository[CLearnerLocalStateRecord]):
     model_type = CLearnerLocalStateRecord
@@ -200,11 +246,16 @@ class CTaskOpportunityRecordRepository(SqlAlchemyNeutralRepository[CTaskOpportun
 class CTaskInstanceRecordRepository(SqlAlchemyNeutralRepository[CTaskInstanceRecord]):
     model_type = CTaskInstanceRecord
 
-    async def get_owned(self, c_task_instance_id: UUID, c_session_id: UUID) -> CTaskInstanceRecord | None:
+    async def get_owned(
+        self, c_task_instance_id: UUID, c_session_id: UUID, *, for_update: bool = False
+    ) -> CTaskInstanceRecord | None:
         """Phase 5: ``c_task_instances`` carries no denormalized ``c_session_id`` (Phase 3a's own
         minimal-FK style, mirroring B) -- ownership is proven through the parent
-        ``c_task_opportunities`` row instead."""
-        return await self.session.scalar(
+        ``c_task_opportunities`` row instead.
+
+        PERF-01: ``for_update=True`` reads AND locks the instance row in one round trip -- the same row lock
+        ``lock_for_update`` takes (see its docstring for why the lock must precede the event counts)."""
+        stmt = (
             select(CTaskInstanceRecord)
             .join(CTaskOpportunityRecord, CTaskInstanceRecord.c_task_opportunity_id == CTaskOpportunityRecord.c_task_opportunity_id)
             .where(
@@ -212,6 +263,9 @@ class CTaskInstanceRecordRepository(SqlAlchemyNeutralRepository[CTaskInstanceRec
                 CTaskOpportunityRecord.c_session_id == c_session_id,
             )
         )
+        if for_update:
+            stmt = stmt.with_for_update(of=CTaskInstanceRecord)
+        return await self.session.scalar(stmt)
 
     async def lock_for_update(self, c_task_instance_id: UUID) -> None:
         """CONNECT Step 5 (supervisor ruling, closing the attempt_number race identified while
@@ -503,12 +557,15 @@ class TeacherProfileRepository(SqlAlchemyNeutralRepository[TeacherProfile]):
 class ClassroomRepository(SqlAlchemyNeutralRepository[Classroom]):
     model_type = Classroom
 
+    # Both teacher-facing reads exclude soft-deleted classrooms (20260914_0009). Every
+    # teacher command resolves its classroom through get_owned, so a deleted classroom cannot
+    # be fetched, listed, invited to, have its requests listed, or be deleted twice.
     async def list_owned(self, teacher_profile_id: UUID) -> list[Classroom]:
-        result = await self.session.scalars(select(Classroom).where(Classroom.teacher_profile_id == teacher_profile_id).order_by(Classroom.created_at_utc, Classroom.classroom_id))
+        result = await self.session.scalars(select(Classroom).where(Classroom.teacher_profile_id == teacher_profile_id, Classroom.deleted_at_utc.is_(None)).order_by(Classroom.created_at_utc, Classroom.classroom_id))
         return list(result)
 
     async def get_owned(self, classroom_id: UUID, teacher_profile_id: UUID) -> Classroom | None:
-        return await self.session.scalar(select(Classroom).where(Classroom.classroom_id == classroom_id, Classroom.teacher_profile_id == teacher_profile_id))
+        return await self.session.scalar(select(Classroom).where(Classroom.classroom_id == classroom_id, Classroom.teacher_profile_id == teacher_profile_id, Classroom.deleted_at_utc.is_(None)))
 
 
 class ClassroomInviteRepository(SqlAlchemyNeutralRepository[ClassroomInvite]):
@@ -517,11 +574,50 @@ class ClassroomInviteRepository(SqlAlchemyNeutralRepository[ClassroomInvite]):
     async def find_by_token_hash(self, token_hash: str) -> ClassroomInvite | None:
         return await self.session.scalar(select(ClassroomInvite).where(ClassroomInvite.token_hash == token_hash))
 
+    async def find_live_by_classroom(self, classroom_id: UUID, now: datetime) -> ClassroomInvite | None:
+        """The classroom's one live join code, if it has one.
+
+        A classroom has at most one non-revoked invite: the code is created with the
+        classroom, never expires and is never rotated, so minting a second would leave two
+        codes resolving to the same room with only one of them readable by the teacher.
+
+        "Live" has to mean the same thing here as it does at redemption, and it did not. This
+        filtered on `revoked_at_utc` alone, while `resolve_invite` and `request_membership` both
+        additionally reject an invite whose `expires_at_utc` has passed. Permanent join codes
+        carry `expires_at_utc = NULL`, but every invite minted BEFORE they landed carries a real
+        24h expiry and was never revoked -- so for those classrooms this reported a live code that
+        no learner could redeem, `create_invite` declined to mint a replacement
+        (`token_already_issued=True, invite_token=None`), and the only existing code's plaintext
+        had been discarded at creation. The classroom was left permanently unable to issue a
+        usable join code, with no recovery path through the API.
+
+        `order_by` + `limit(1)` because the "at most one" invariant is aspirational, not enforced
+        by a constraint: databases predating this already hold several unrevoked rows per
+        classroom, and an unordered `scalar()` over them picks an arbitrary one.
+        """
+        return await self.session.scalar(
+            select(ClassroomInvite)
+            .where(
+                ClassroomInvite.classroom_id == classroom_id,
+                ClassroomInvite.revoked_at_utc.is_(None),
+                or_(
+                    ClassroomInvite.expires_at_utc.is_(None),
+                    ClassroomInvite.expires_at_utc > now,
+                ),
+            )
+            .order_by(ClassroomInvite.created_at_utc.desc(), ClassroomInvite.classroom_invite_id.desc())
+            .limit(1)
+        )
+
     async def get_owned(self, classroom_invite_id: UUID, teacher_profile_id: UUID) -> ClassroomInvite | None:
         statement = (
             select(ClassroomInvite)
             .join(Classroom, Classroom.classroom_id == ClassroomInvite.classroom_id)
-            .where(ClassroomInvite.classroom_invite_id == classroom_invite_id, Classroom.teacher_profile_id == teacher_profile_id)
+            .where(
+                ClassroomInvite.classroom_invite_id == classroom_invite_id,
+                Classroom.teacher_profile_id == teacher_profile_id,
+                Classroom.deleted_at_utc.is_(None),
+            )
         )
         return await self.session.scalar(statement)
 
@@ -538,7 +634,11 @@ class ClassroomMembershipRepository(SqlAlchemyNeutralRepository[ClassroomMembers
         statement = (
             select(ClassroomMembership)
             .join(Classroom, Classroom.classroom_id == ClassroomMembership.classroom_id)
-            .where(ClassroomMembership.classroom_membership_id == classroom_membership_id, Classroom.teacher_profile_id == teacher_profile_id)
+            .where(
+                ClassroomMembership.classroom_membership_id == classroom_membership_id,
+                Classroom.teacher_profile_id == teacher_profile_id,
+                Classroom.deleted_at_utc.is_(None),
+            )
         )
         return await self.session.scalar(statement)
 
@@ -576,7 +676,9 @@ class ClassroomMembershipRepository(SqlAlchemyNeutralRepository[ClassroomMembers
         statement = (
             select(ClassroomMembership, Classroom.name, Classroom.grade)
             .join(Classroom, Classroom.classroom_id == ClassroomMembership.classroom_id)
-            .where(ClassroomMembership.learner_id == learner_id)
+            # A membership that ended with its classroom's deletion is not shown to the
+            # learner: with nothing left, the app sends them back to enter a classroom code.
+            .where(ClassroomMembership.learner_id == learner_id, ClassroomMembership.state != "REMOVED")
             .order_by(ClassroomMembership.requested_at_utc, ClassroomMembership.classroom_membership_id)
         )
         result = await self.session.execute(statement)
@@ -730,6 +832,27 @@ class TaskInstanceRepository(SqlAlchemyNeutralRepository[TaskInstanceRecord]):
             select(TaskInstanceRecord).where(TaskInstanceRecord.item_opportunity_id == item_opportunity_id)
         )
 
+    async def map_by_opportunities(
+        self, item_opportunity_ids: Sequence[UUID]
+    ) -> dict[UUID, TaskInstanceRecord]:
+        """`find_by_opportunity` for a whole session in one round trip.
+
+        Session finalisation needs the instance for every opportunity it is aggregating. Asking
+        one opportunity at a time is an N+1 that costs a full network round trip per question --
+        the single `POST .../complete` that ends a session issued 34 statements where a
+        mid-session one issues 18. The mapping is 1:1 (`uq_b_task_instances_opportunity`), so a
+        dict keyed by opportunity id loses nothing, and a missing key means exactly what a `None`
+        from `find_by_opportunity` meant.
+        """
+        if not item_opportunity_ids:
+            return {}
+        rows = await self.session.scalars(
+            select(TaskInstanceRecord).where(
+                TaskInstanceRecord.item_opportunity_id.in_(item_opportunity_ids)
+            )
+        )
+        return {row.item_opportunity_id: row for row in rows}
+
 
 class PresentationTokenRepository(SqlAlchemyNeutralRepository[PresentationTokenRecord]):
     model_type = PresentationTokenRecord
@@ -781,6 +904,28 @@ class AttemptRepository(SqlAlchemyNeutralRepository[AttemptRecord]):
         )
         return list(result)
 
+    async def map_for_opportunities(
+        self, item_opportunity_ids: Sequence[UUID]
+    ) -> dict[UUID, list[AttemptRecord]]:
+        """`list_for_opportunity` for a whole session in one round trip.
+
+        Ordering is the load-bearing part: the per-opportunity lists must come out ordered by
+        ``attempt_index`` exactly as `list_for_opportunity` returns them, because the aggregation
+        summary is derived from that order. Ordering by opportunity id first keeps each group
+        contiguous, and `attempt_index` second reproduces the per-group order verbatim.
+        """
+        if not item_opportunity_ids:
+            return {}
+        rows = await self.session.scalars(
+            select(AttemptRecord)
+            .where(AttemptRecord.item_opportunity_id.in_(item_opportunity_ids))
+            .order_by(AttemptRecord.item_opportunity_id, AttemptRecord.attempt_index)
+        )
+        grouped: dict[UUID, list[AttemptRecord]] = {}
+        for row in rows:
+            grouped.setdefault(row.item_opportunity_id, []).append(row)
+        return grouped
+
 
 class SkillStateTransitionRepository(SqlAlchemyNeutralRepository[SkillStateTransitionRecord]):
     """No update/delete method is defined here by design — transitions are immutable (BEplan
@@ -818,6 +963,22 @@ class HintEventRepository(SqlAlchemyNeutralRepository[HintEventRecord]):
             select(func.count()).select_from(HintEventRecord).where(HintEventRecord.item_opportunity_id == item_opportunity_id)
         )
 
+    async def count_by_opportunities(self, item_opportunity_ids: Sequence[UUID]) -> dict[UUID, int]:
+        """`count_for_opportunity` for a whole session in one round trip.
+
+        A GROUP BY returns no row for an opportunity with no hints, where
+        `count_for_opportunity` would have returned 0 -- so callers must read this with a
+        `.get(id, 0)` default rather than indexing it.
+        """
+        if not item_opportunity_ids:
+            return {}
+        result = await self.session.execute(
+            select(HintEventRecord.item_opportunity_id, func.count())
+            .where(HintEventRecord.item_opportunity_id.in_(item_opportunity_ids))
+            .group_by(HintEventRecord.item_opportunity_id)
+        )
+        return {opportunity_id: count for opportunity_id, count in result.all()}
+
 
 class SessionAggregateResultRepository(SqlAlchemyNeutralRepository[SessionAggregateResultRecord]):
     """BE4e (BEplan §9 BE4.6). No update/delete method by design — immutable, same discipline as
@@ -839,5 +1000,84 @@ class SkillCertificationResultRepository(SqlAlchemyNeutralRepository[SkillCertif
     async def list_for_session(self, session_id: UUID) -> list[SkillCertificationResultRecord]:
         result = await self.session.scalars(
             select(SkillCertificationResultRecord).where(SkillCertificationResultRecord.session_id == session_id)
+        )
+        return list(result)
+
+
+# =====================================================================================
+# Component D (Component D authorization, owner decision D-011 A1, 2026-10-21).
+#
+# Added here rather than in a new `d_repositories.py` so that every repository in the backend
+# stays in one place -- the host has kept B's, C's and the shared tables together in this file
+# since BE2, and a separate module for D alone would make "where do repositories live" have two
+# answers.
+# =====================================================================================
+
+
+class DLearnerStateRepository(SqlAlchemyNeutralRepository[DLearnerStateRecord]):
+    """One row per learner. A learner with NO ROW is a supported state, not an error -- the
+    contract reads it as ``{intro_completed: false, language: "en"}`` and creates nothing."""
+
+    model_type = DLearnerStateRecord
+
+    async def find_for_learner(self, learner_id: UUID) -> DLearnerStateRecord | None:
+        return await self.session.get(DLearnerStateRecord, learner_id)
+
+    async def get_for_update(self, learner_id: UUID) -> DLearnerStateRecord | None:
+        """``populate_existing=True`` for the same reason ``LearnerSkillStateRepository`` gives:
+        the upsert reads this row after an advisory lock, and if anything earlier in the same
+        request already loaded it, the identity map would hand back the pre-lock attributes
+        instead of what the locked read actually found."""
+        return await self.session.scalar(
+            select(DLearnerStateRecord)
+            .where(DLearnerStateRecord.learner_id == learner_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+
+class DInteractionRepository(SqlAlchemyNeutralRepository[DInteractionRecord]):
+    """The raw per-question evidence a profile was computed from. No update or delete method by
+    design: once a run is recorded, what the child did is not editable."""
+
+    model_type = DInteractionRecord
+
+    async def list_for_session(self, session_id: UUID) -> list[DInteractionRecord]:
+        result = await self.session.scalars(
+            select(DInteractionRecord)
+            .where(DInteractionRecord.session_id == session_id)
+            .order_by(DInteractionRecord.question_id)
+        )
+        return list(result)
+
+
+class DCognitiveProfileRepository(SqlAlchemyNeutralRepository[DCognitiveProfileRecord]):
+    """One profile per profiling run. ``session_id`` is unique GLOBALLY, which is what lets
+    ``find_for_session`` be a single lookup and lets the route refuse another learner's session as
+    a 404 rather than reveal that it exists."""
+
+    model_type = DCognitiveProfileRecord
+
+    async def find_for_session(self, session_id: UUID) -> DCognitiveProfileRecord | None:
+        return await self.session.scalar(
+            select(DCognitiveProfileRecord).where(DCognitiveProfileRecord.session_id == session_id)
+        )
+
+    async def find_latest_for_learner(self, learner_id: UUID) -> DCognitiveProfileRecord | None:
+        return await self.session.scalar(
+            select(DCognitiveProfileRecord)
+            .where(DCognitiveProfileRecord.learner_id == learner_id)
+            .order_by(DCognitiveProfileRecord.generated_at.desc())
+            .limit(1)
+        )
+
+    async def list_for_learner(self, learner_id: UUID, limit: int) -> list[DCognitiveProfileRecord]:
+        """Newest first, which is the order the history screen renders and the order
+        ``ix_d_cognitive_profiles_learner_generated_at`` was created DESC to serve."""
+        result = await self.session.scalars(
+            select(DCognitiveProfileRecord)
+            .where(DCognitiveProfileRecord.learner_id == learner_id)
+            .order_by(DCognitiveProfileRecord.generated_at.desc())
+            .limit(limit)
         )
         return list(result)

@@ -25,9 +25,12 @@ import type {
   CSessionFields,
   CSubmitActionResult,
   HintRequestResponse,
+  LearnerSkillStateItem,
+  LearnerSkillStatesResponse,
   OpportunityAdvanceResponse,
   OpportunityPresentationFields,
   OpportunityPresentationResponse,
+  PresentationAckResponse,
   SessionFields,
   SessionStandingResponse,
 } from '@/src/api/generated/openapi-types';
@@ -360,6 +363,46 @@ export function isSessionStandingResponse(value: unknown): value is SessionStand
     opportunityAdvanceStates.has(value.session_state) &&
     Number.isInteger(value.opportunities_completed) &&
     Number.isInteger(value.opportunities_total_bound) &&
+    isNonEmptyString(value.request_id)
+  );
+}
+
+// GET /api/v1/b/learner/skill-states (2026-09-21). `p_l` is the only raw BKT value the API
+// exposes anywhere, and the ONLY thing the app may do with it is size a bar -- see
+// features/home/skill-bar-fill.ts. Bounds are checked here as well as server-side so a malformed
+// value can never render as an over-full bar.
+function isLearnerSkillStateItem(value: unknown): value is LearnerSkillStateItem {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.skill_id) &&
+    typeof value.p_l === 'number' &&
+    Number.isFinite(value.p_l) &&
+    value.p_l >= 0 &&
+    value.p_l <= 1 &&
+    Number.isInteger(value.observation_count) &&
+    (value.observation_count as number) >= 0
+  );
+}
+
+export function isLearnerSkillStatesResponse(value: unknown): value is LearnerSkillStatesResponse {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.skill_states) &&
+    value.skill_states.every(isLearnerSkillStateItem) &&
+    isNonEmptyString(value.request_id)
+  );
+}
+
+// POST .../opportunities/{id}/presented -- the acknowledgement that starts the answering clock
+// at the render. The deadline that comes back is the server's, and it is the one the screen must
+// trust from then on: it may be LATER than the one the presentation carried, because selection
+// (and any prefetch before it) no longer counts against the child.
+export function isPresentationAckResponse(value: unknown): value is PresentationAckResponse {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.item_opportunity_id) &&
+    isNonEmptyString(value.server_timeout_deadline_utc) &&
+    typeof value.anchored === 'boolean' &&
     isNonEmptyString(value.request_id)
   );
 }

@@ -97,3 +97,6 @@ provenance/wheels/*
 # task_service.py. Contains no generator source, no wheel, no research artifacts -- a single
 # JSON manifest, schema-validated against provenance/c-runtime-bundle.schema.json.
 !provenance/c-runtime-bundle-approved-1.0.json
+# LIVE-01: the frozen Q-learning policy tables (hash-verified at session start against MANIFEST.json), read by
+# app/application/live_engine_c/q_policy.py. Plain JSON, no generator source, no wheel.
+!provenance/c_policy/

@@ -45,7 +45,7 @@ reasoning, including the no-prior-row case). WIRED, NOT REACHABLE is still uncha
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Mapping, Optional, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,6 +142,7 @@ async def build_evidence_for_session(
     current_difficulty_level: int,
     prior_session_end_state: Optional[LearnerState],
     evidence_window_config: EvidenceWindowConfig,
+    history_records: Optional[Sequence[CTaskOpportunitySummaryRecord]] = None,
 ):
     """v3.0 §7.2: "history passed to build_policy_evidence is the full running session history
     including the just-finished task." Reads EVERY persisted summary for the session, in order --
@@ -173,7 +174,13 @@ async def build_evidence_for_session(
     protected activity, not the check, is what refuses)."""
     instance_record = await session.get(CTaskInstanceRecord, c_task_instance_id)
     is_recovery_context = instance_record is not None and instance_record.recovery_parent_instance_id is not None
-    summaries = await get_derivable_history_for_session(session, c_session_id=c_session_id)
+    # PERF-01: ``history_records`` is the result of ONE ``get_derivable_history_for_session`` call the caller made and shares
+    # with its other consumer of the same history (``submit_action``'s Q observation), instead of reading it twice.
+    summaries = (
+        history_records
+        if history_records is not None
+        else await get_derivable_history_for_session(session, c_session_id=c_session_id)
+    )
     history = [
         _to_domain_summary(
             record, student_id=student_id, intervention_session_id=intervention_session_id,
@@ -211,6 +218,9 @@ async def decide_and_persist_adaptation(
     safety_config: SafetyConfig,
     selection_config: SelectionConfig,
     request_id: str,
+    proposed_action: Optional[str] = None,
+    policy_version: Optional[str] = None,
+    rl_state: Optional[Mapping[str, object]] = None,
 ) -> CPolicyDecisionRecord:
     """v3.0 §11 Phase 6 scope: "persist AdaptationDecision to c_policy_decisions and
     interventions to c_safety_events." S8-c: ``decide_adaptation`` (the ONE function that ever
@@ -227,15 +237,32 @@ async def decide_and_persist_adaptation(
     into ``CPolicyDecisionRecord.safety_forces_recovery`` below -- the real, per-decision value,
     never a literal. Batch 2 deliberately left this call site alone (its own scope was wiring the
     FIRST live caller, not the flag pathway) so this switch would land in one place."""
-    result = adapter.decide_adaptation_with_safety_flags(
-        policy_mode=policy_mode,
-        evidence=evidence,
-        current_difficulty_level=current_difficulty_level,
-        seed_lineage=seed_lineage,
-        policy_config=policy_config,
-        safety_config=safety_config,
-        selection_config=selection_config,
-    )
+    if proposed_action is None:
+        result = adapter.decide_adaptation_with_safety_flags(
+            policy_mode=policy_mode,
+            evidence=evidence,
+            current_difficulty_level=current_difficulty_level,
+            seed_lineage=seed_lineage,
+            policy_config=policy_config,
+            safety_config=safety_config,
+            selection_config=selection_config,
+        )
+    else:
+        # LIVE-01: an externally proposed action (the frozen Q policy). Safety still disposes -- the pinned
+        # apply_safety runs inside decide_with_proposed_action; policy_version / rl_state are the caller's.
+        if policy_version is None:
+            raise ValueError("policy_version is required with proposed_action")
+        result = adapter.decide_with_proposed_action(
+            selected_action=proposed_action,
+            policy_mode=policy_mode,
+            policy_version=policy_version,
+            rl_state=rl_state,
+            evidence=evidence,
+            current_difficulty_level=current_difficulty_level,
+            seed_lineage=seed_lineage,
+            safety_config=safety_config,
+            selection_config=selection_config,
+        )
     decision = result.decision
 
     decision_id = uuid4()

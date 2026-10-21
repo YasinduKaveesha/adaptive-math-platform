@@ -61,3 +61,9 @@ Thumbs.db
 !/Component_B_Backend_Overview.md
 !/Component_B_Measurement_And_Parity_Review.md
 !/Component_B_Backend_Work_Order.md
+.playwright-mcp/
+.claude/
+CLAUDE.md
+
+# Working notes for the Component C RL write-up -- not part of the repository.
+/Component_C_RL_Summary/

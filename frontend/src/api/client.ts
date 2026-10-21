@@ -1,94 +1,18 @@
-import type { ApiErrorEnvelope, AuthenticatedPrincipal, AuthorizedLearner } from '@/src/api/contracts';
+import type { AuthenticatedPrincipal, AuthorizedLearner } from '@/src/api/contracts';
 import { ApiClientError } from '@/src/api/errors';
 import { listLearnerClassrooms } from '@/src/api/learner-onboarding-api';
 import { pickMembership } from '@/src/api/membership-selection';
+import { requestJson, type RefreshAccessToken } from '@/src/api/request';
 import {
-  isApiErrorEnvelope,
   isAuthenticatedPrincipal,
   isLearnerProfileResponse,
 } from '@/src/api/runtime-validation';
 import type { PublicConfig } from '@/src/config/env';
 
-const REQUEST_TIMEOUT_MS = 10_000;
 const SAFE_GET_RETRY_DELAY_MS = 300;
-
-export type RefreshAccessToken = () => Promise<string | null>;
-
-type ApiRequestOptions<T> = {
-  accessToken?: string;
-  body?: unknown;
-  idempotencyKey?: string;
-  method: 'GET' | 'POST';
-  path: string;
-  validate: (value: unknown) => value is T;
-};
 
 async function wait(milliseconds: number) {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function mapHttpError(status: number, envelope?: ApiErrorEnvelope) {
-  const requestId = envelope?.error.request_id;
-  if (status === 401) return new ApiClientError('unauthenticated', 'The session is no longer valid.', status, requestId, envelope);
-  if (status === 403) return new ApiClientError('forbidden', 'This account is not approved for learner access.', status, requestId, envelope);
-  if (status === 400 || status === 422) return new ApiClientError('invalid-request', 'The request could not be accepted.', status, requestId, envelope);
-  if (status === 409 || status === 412) return new ApiClientError('conflict', 'The session state changed.', status, requestId, envelope);
-  if (status === 429) return new ApiClientError('rate-limited', 'Please wait before trying again.', status, requestId, envelope);
-  if (status === 503) return new ApiClientError('unavailable', 'Learning is temporarily unavailable.', status, requestId, envelope);
-  return new ApiClientError('server', 'The server could not complete the request.', status, requestId, envelope);
-}
-
-export async function requestJson<T>(
-  config: PublicConfig,
-  options: ApiRequestOptions<T>,
-): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let response: Response;
-
-  try {
-    response = await fetch(`${config.apiBaseUrl}${options.path}`, {
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      headers: {
-        Accept: 'application/json',
-        ...(options.accessToken ? { Authorization: `Bearer ${options.accessToken}` } : {}),
-        ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...(options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
-        'X-Mobile-App-Version': '1.0.0',
-      },
-      method: options.method,
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new ApiClientError('timeout', 'The server took too long to respond.');
-    }
-    throw new ApiClientError('network', 'The server could not be reached.');
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  const headerRequestId = response.headers.get('x-request-id') ?? undefined;
-  let body: unknown;
-  try {
-    body = JSON.parse(await response.text()) as unknown;
-  } catch {
-    throw new ApiClientError('invalid-response', 'The server returned an unsupported response.', response.status, headerRequestId);
-  }
-
-  if (!response.ok) {
-    const envelope = isApiErrorEnvelope(body) ? body : undefined;
-    const error = mapHttpError(response.status, envelope);
-    if (!error.requestId && headerRequestId) {
-      throw new ApiClientError(error.kind, error.message, error.status, headerRequestId, error.envelope);
-    }
-    throw error;
-  }
-
-  if (!options.validate(body)) {
-    throw new ApiClientError('invalid-response', 'The server returned an unsupported response.', response.status, headerRequestId);
-  }
-  return body;
 }
 
 async function requestMeOnce(config: PublicConfig, accessToken: string) {
@@ -168,6 +92,10 @@ async function getClassroomMembershipOrNull(config: PublicConfig, accessToken: s
   }
 }
 
+// Re-exported so existing importers keep working; the transport itself now lives in
+// request.ts, which imports nothing from this file. See that file for the cycle this broke.
+export { requestJson, type RefreshAccessToken };
+
 export async function getAuthorizedLearner(
   config: PublicConfig,
   accessToken: string,
@@ -179,9 +107,36 @@ export async function getAuthorizedLearner(
     refreshAccessToken,
   );
 
-  const learnerProfile = await getLearnerProfileOrNull(config, verifiedAccessToken);
+  // The profile and the membership are issued TOGETHER and awaited in order (FE-019, 2026-10-09).
+  // They were sequential, and nothing required that: neither request is an input to the other, and
+  // each took ~0.5s against the hosted database, so startup spent a second of a child's attention
+  // on two round trips that could have overlapped. `/me` still goes first and alone, because it
+  // owns the token-refresh retry and these two must use the token it verified.
+  //
+  // AWAITED IN ORDER, NOT `Promise.all`. The three outcomes below have to stay exactly what they
+  // were, and `Promise.all` would break the middle one:
+  //
+  //   - profile REJECTS      -> propagate, as before. The membership rejection (if any) is parked
+  //                             by the no-op catch below so discarding it cannot surface as an
+  //                             unhandled rejection.
+  //   - profile is NULL      -> onboarding, and the membership result is DISCARDED unread. This is
+  //                             the case `Promise.all` would get wrong: a learner with no profile
+  //                             yet is the exact learner whose `/learner/classrooms` fails (no
+  //                             learner link, so the server 404s, which
+  //                             `getClassroomMembershipOrNull` turns into a thrown `unavailable`).
+  //                             Under `Promise.all` that rejection would take the whole call down
+  //                             and send a first-run child to the "unavailable" screen instead of
+  //                             to onboarding.
+  //   - profile RESOLVES     -> await the membership and let its failure propagate, as before.
+  //
+  // The cost is one discarded GET for a learner who has no profile yet -- a first-run-only path.
+  const learnerProfilePromise = getLearnerProfileOrNull(config, verifiedAccessToken);
+  const classroomMembershipPromise = getClassroomMembershipOrNull(config, verifiedAccessToken);
+  classroomMembershipPromise.catch(() => undefined);
+
+  const learnerProfile = await learnerProfilePromise;
   if (!learnerProfile) return { classroomMembership: null, learnerProfile: null, principal };
 
-  const classroomMembership = await getClassroomMembershipOrNull(config, verifiedAccessToken);
+  const classroomMembership = await classroomMembershipPromise;
   return { classroomMembership, learnerProfile, principal };
 }

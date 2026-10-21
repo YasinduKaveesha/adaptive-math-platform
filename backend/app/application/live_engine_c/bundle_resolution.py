@@ -15,6 +15,8 @@ error type the public API contract already knows how to render as HTTP 409 with 
 
 from __future__ import annotations
 
+import os
+
 from typing import Mapping, Optional
 
 from app.core.errors import ConflictError
@@ -63,6 +65,15 @@ def resolve_c_bundle_and_catalogue(
     """
     resolved_artifact_paths = dict(artifact_paths or {})
     resolved_artifact_paths.setdefault("catalogue", catalogue_path)
+    # PERF-01: these inputs are immutable files. The result of a SUCCESSFUL resolution (schema validation, every artifact
+    # checksum, catalogue parse + checksum) is cached per process, keyed by the arguments AND by each file's identity
+    # (path, size, mtime) -- so the first call after start-up does the full validation, a file that is missing or changed
+    # on disk is re-validated from scratch (and fails closed as before), and a failure is never cached.
+    cache_key = (bundle_path, schema_path, catalogue_path, require_approved, tuple(sorted(resolved_artifact_paths.items())))
+    fingerprint = _file_fingerprint(bundle_path, schema_path, *resolved_artifact_paths.values())
+    cached = _RESOLUTION_CACHE.get(cache_key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
     try:
         bundle = CRuntimeBundleLoader().load_and_validate(
             bundle_path,
@@ -75,7 +86,27 @@ def resolve_c_bundle_and_catalogue(
         catalogue_checksum = adapter.checksum(catalogue_path)
     except (RuntimeBundleError, LiveEngineCError) as exc:
         raise ConflictError() from exc
-    return bundle, catalogue, catalogue_checksum
+    result = (bundle, catalogue, catalogue_checksum)
+    if fingerprint is not None:
+        _RESOLUTION_CACHE[cache_key] = (fingerprint, result)
+    return result
+
+
+_RESOLUTION_CACHE: dict = {}
+
+
+def clear_resolution_cache() -> None:
+    _RESOLUTION_CACHE.clear()
+
+
+def _file_fingerprint(*paths: str):
+    """(path, size, mtime_ns) for every file, or ``None`` if any is missing (then nothing is cached and the loader
+    reports the missing file exactly as before)."""
+    try:
+        stats = [(path, os.stat(path)) for path in paths]
+    except OSError:
+        return None
+    return tuple((path, st.st_size, st.st_mtime_ns) for path, st in stats)
 
 
 def resolve_selection_config(bundle: CRuntimeBundle) -> SelectionConfig:
@@ -229,3 +260,14 @@ def assert_policy_config_matches_session_gate(
     ``parameter_source_status`` -- never the values themselves."""
     if policy_config.parameter_source_status != session_gated_parameter_source_status:
         raise ConfigurationFamilyNotUsableError("policy_config", ("parameter_source_status",))
+
+
+def assert_q_policy_matches_session_gate(
+    q_policy_parameter_source_status: str, *, session_gated_parameter_source_status: str
+) -> None:
+    """LIVE-01 seam, the Q-policy twin of ``assert_policy_config_matches_session_gate``: the status of the Q
+    artifact actually loaded at ``submit_action`` must equal the status the session was gated on at creation
+    (``q_policy_config`` family, ``session_lifecycle.create_session``). Raises the same
+    ``ConfigurationFamilyNotUsableError`` as the other gates."""
+    if q_policy_parameter_source_status != session_gated_parameter_source_status:
+        raise ConfigurationFamilyNotUsableError("q_policy_config", ("parameter_source_status",))

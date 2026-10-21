@@ -68,11 +68,21 @@ export const LINE_POSITION_COARSE_STEP = 10;
 // is entirely off-screen with nothing telling the child which direction, or how far, to go. A
 // bucketed RANGE -- never the exact value -- solves that without reopening the leak this archetype
 // otherwise avoids: `targetRangeStart`/`targetRangeEnd` narrow the search to a fixed-width window
-// (5 units) rather than the full `intervalMax`, the same trade-off a paper number line's own printed
+// rather than the full `intervalMax`, the same trade-off a paper number line's own printed
 // gridlines make (a labelled "30" gridline narrows a search without pinpointing 34 on its own).
 // `TARGET_HINT_BUCKET_SIZE` is a constant, never derived from `intervalMax` or `difficulty_level` --
-// the bucket is always 5 wide regardless of how long the line is.
-const TARGET_HINT_BUCKET_SIZE = 5;
+// the bucket is the same width regardless of how long the line is.
+//
+// TENS, not fives (owner instruction, 2026-09-28). Boundaries now land on 0, 10, 20, 30 -- the
+// numbers a child counts in and the ones a number line is conventionally labelled with, so the
+// hint names a landmark they already recognise rather than an arbitrary half-step.
+//
+// The trade-off, stated rather than hidden: on the SHORTEST line (L1, `intervalMax` 10) a ten-wide
+// bucket is the whole line, so the hint stops narrowing anything there. That is acceptable because
+// it is not where the hint is needed -- a 10-unit line is fully visible without scrolling, and this
+// hint exists for the 200-unit line at L5 where the target starts off-screen. On that line a
+// ten-wide window is still a twentieth of the search.
+const TARGET_HINT_BUCKET_SIZE = 10;
 
 export type LinePositionPayloadValue = {
   key: string;
@@ -89,10 +99,12 @@ export type LinePositionSpec = {
   targetPosition: number;
   /** A `TARGET_HINT_BUCKET_SIZE`-wide window containing `targetPosition` -- see "THE
    *  DISCOVERABILITY HINT" above. Boundaries fall on multiples of `TARGET_HINT_BUCKET_SIZE`
-   *  ("0-5, 5-10, 10-15", not "0-4, 5-9, 10-14"): `targetRangeStart` is the multiple at or below
-   *  `targetPosition`, `targetRangeEnd` is the next one up. Always satisfies `targetRangeStart <=
-   *  targetPosition <= targetRangeEnd`, and `targetRangeEnd - targetRangeStart ===
-   *  TARGET_HINT_BUCKET_SIZE` except where clamped by `intervalMax` at the line's own far end. */
+   *  ("0-10, 10-20, 20-30", not "0-9, 10-19, 20-29"): normally `targetRangeStart` is the multiple at
+   *  or below `targetPosition` and `targetRangeEnd` the next one up, but at the line's far end the
+   *  window SLIDES DOWN to stay full width rather than shrinking against `intervalMax`. Always
+   *  satisfies `targetRangeStart <= targetPosition <= targetRangeEnd`, and the width is always
+   *  `TARGET_HINT_BUCKET_SIZE` unless the whole line is shorter than one bucket -- NEVER zero,
+   *  which would state the answer outright. */
   targetRangeStart: number;
   targetRangeEnd: number;
   /** Every other declared `prompt_payload` key, in the wire's own key order (empty on every real
@@ -183,11 +195,22 @@ export function resolveLinePositionSpec(task: CNextTaskResponse): LinePositionSp
 
   if (positionKey === null) return null;
 
-  // Bucket boundaries at multiples of TARGET_HINT_BUCKET_SIZE (2026-08-26 correction: "0-5, 5-10,
-  // 10-15" -- each bucket's end is the NEXT multiple, not one short of it, matching how a number
-  // line's own gridlines are conventionally labelled). Target 34 -> bucket [30, 35], displayed
-  // "30 and 35".
-  const targetRangeStart = Math.floor(targetPosition / TARGET_HINT_BUCKET_SIZE) * TARGET_HINT_BUCKET_SIZE;
+  // Bucket boundaries at multiples of TARGET_HINT_BUCKET_SIZE (2026-08-26 correction: "0-10,
+  // 10-20, 20-30" -- each bucket's end is the NEXT multiple, not one short of it, matching how a
+  // number line's own gridlines are conventionally labelled). Target 34 -> bucket [30, 40],
+  // displayed "30 and 40".
+  //
+  // AT THE LINE'S FAR END THE WINDOW SLIDES DOWN; IT DOES NOT SHRINK (2026-09-28). This used to
+  // clamp the END to `intervalMax`, which COLLAPSED the window to zero width whenever the target
+  // sat exactly on the last bucket boundary: target 10 on a 10-unit line produced start 10, end
+  // min(10, 15) = 10, and the hint read "Target is between 10 and 10" -- the exact answer, stated
+  // as a numeral, which is the one thing this archetype's whole design refuses to do (see the
+  // header's "IS THE GIVEN, NOT THE ANSWER"). Sliding the start back instead keeps the window its
+  // full width and keeps the target inside it: the same [5, 10] a paper number line's gridlines
+  // would give. A line SHORTER than one bucket is the only case that still yields a narrower
+  // window -- there, [0, intervalMax] is the whole line and there is nothing narrower to leak.
+  const bucketStart = Math.floor(targetPosition / TARGET_HINT_BUCKET_SIZE) * TARGET_HINT_BUCKET_SIZE;
+  const targetRangeStart = Math.max(0, Math.min(bucketStart, intervalMax - TARGET_HINT_BUCKET_SIZE));
   const targetRangeEnd = Math.min(intervalMax, targetRangeStart + TARGET_HINT_BUCKET_SIZE);
 
   return {

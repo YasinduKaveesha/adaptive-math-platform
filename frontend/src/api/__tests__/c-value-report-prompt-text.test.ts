@@ -59,6 +59,11 @@ test('negative control: a one-character-altered prompt_text is NOT reported as i
   const task = makeTask(entry);
   const spec = resolveValueReportSpec(task);
   assert.notEqual(spec, null);
-  const alteredPromptText = `${entry.prompt_text.slice(0, -1)}?`;
+  // Swap the final character for a DIFFERENT one. This used to append '?' unconditionally, which
+  // silently stopped altering anything once prompts began ending in '?' themselves (the 2026-09-28
+  // ESL rewrite) -- the "altered" string was identical to the original and the control passed
+  // vacuously, which is the exact failure it exists to rule out.
+  const lastCharacter = entry.prompt_text.slice(-1);
+  const alteredPromptText = `${entry.prompt_text.slice(0, -1)}${lastCharacter === '?' ? '.' : '?'}`;
   assert.notEqual(spec!.promptText, alteredPromptText);
 });

@@ -14,6 +14,9 @@ import { getAuthorizedLearner } from '@/src/api/client';
 import type { AuthorizedLearner } from '@/src/api/contracts';
 import { ApiClientError } from '@/src/api/errors';
 import { getSupabaseClient } from '@/src/auth/supabase';
+import { forgetCompdLearnerState } from '@/src/features/compd/compd-state-cache';
+import { forgetHomeSessionState } from '@/src/features/home/home-session-state-cache';
+import { clearLearnerSessionRecords } from '@/src/features/session/session-command-store';
 import { readPublicConfig, type PublicConfig } from '@/src/config/env';
 
 export type Gender = 'female' | 'male';
@@ -328,6 +331,25 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const signOut = useCallback(async () => {
     operationRef.current += 1;
+    // THIS learner's local recovery records, cleared before the session goes (B3, 2026-10-09).
+    // Read the subject first: once `setMe(null)` runs there is nothing left to scope the cleanup
+    // to, and an unscoped sweep would delete a second learner's interrupted answer on a shared
+    // classroom device. `clearLearnerSessionRecords` swallows its own storage failures and is a
+    // no-op for a null subject, so a sign-out with no resolvable identity still completes.
+    //
+    // Deliberately NOT done in `clearLocalSession` (the expired-token path): an expired token is
+    // not a change of learner. The record is still theirs and still replayable once they sign back
+    // in, and the server's idempotency record remains the authority on whether the answer landed.
+    await clearLearnerSessionRecords(me?.principal.user_id ?? null);
+    // Home's in-memory progress cache, for the same reason and with the same scoping rule: it is
+    // only what the panel DRAWS while revalidating, but on a shared classroom device a second
+    // learner must never open Home onto the first one's session progress. Same deliberate omission
+    // from `clearLocalSession` -- an expired token is not a change of learner, and the cached state
+    // is still theirs.
+    forgetHomeSessionState(me?.principal.user_id ?? null);
+    // Component D's intro/language cache, same scoping and same omission from `clearLocalSession`:
+    // the next learner on this device must reach compD through its own server answer.
+    forgetCompdLearnerState(me?.principal.user_id ?? null);
     if (config) {
       try {
         await getSupabaseClient(config).auth.signOut({ scope: 'local' });
@@ -340,7 +362,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setProfileGender(null);
     setProfileName(null);
     setStatus('signed-out');
-  }, [config]);
+  }, [config, me]);
 
   const continueToComponentBPreview = useCallback(() => {
     if (config?.appEnvironment === 'development') {

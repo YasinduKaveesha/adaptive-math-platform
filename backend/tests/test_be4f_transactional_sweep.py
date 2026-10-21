@@ -321,6 +321,31 @@ def test_full_session_flow_covers_every_path_and_updates_bkt_only_on_first_attem
         assert complete3.status_code == 201
         opp4_id = complete3.json()["next_opportunity"]["item_opportunity_id"]
 
+        # ACKNOWLEDGE PRESENTATION FIRST (2026-10-10 rule, see attempt_submission.py).
+        # A deadline only binds a learner who was CONFIRMED to have seen the question: an
+        # opportunity with no `presented_at_utc` can no longer time out, because the deadline still
+        # in force would be the fail-safe written at SELECTION, which measures server and prefetch
+        # time rather than the child's. The real screen sends this the moment the question renders,
+        # so a fixture that omits it is not modelling a timeout -- it is modelling the
+        # failed-acknowledgement anomaly, which is deliberately NOT a timeout.
+        #
+        # The ack needs the zero timeout STILL PATCHED when it runs. `presentation_ack` imports
+        # DEFAULT_TIMEOUT inside its own function, so it reads selection's value at CALL time --
+        # and since 2026-10-10 the ack RE-ANCHORS the deadline
+        # (`timeout_deadline_utc = now + timeout`). At the real five minutes it would hand this
+        # opportunity a live deadline and the submission would never be late, which is the
+        # opposite of what this fixture tests.
+        original_ack_timeout = opportunity_selection_module.DEFAULT_TIMEOUT
+        opportunity_selection_module.DEFAULT_TIMEOUT = timedelta(seconds=0)
+        try:
+            client.post(
+                f"/api/v1/b/sessions/{session_id}/opportunities/{opp4_id}/presented",
+                json=None,
+                headers=headers(str(uuid4())),
+            )
+        finally:
+            opportunity_selection_module.DEFAULT_TIMEOUT = original_ack_timeout
+
         import time
 
         time.sleep(0.05)
@@ -696,6 +721,31 @@ def test_server_client_clock_disagreement_server_timestamps_authoritative() -> N
             opportunity_selection_module.DEFAULT_TIMEOUT = original_timeout
         opp_a_id = opp_a.json()["item_opportunity_id"]
 
+        # ACKNOWLEDGE PRESENTATION FIRST (2026-10-10 rule, see attempt_submission.py).
+        # A deadline only binds a learner who was CONFIRMED to have seen the question: an
+        # opportunity with no `presented_at_utc` can no longer time out, because the deadline still
+        # in force would be the fail-safe written at SELECTION, which measures server and prefetch
+        # time rather than the child's. The real screen sends this the moment the question renders,
+        # so a fixture that omits it is not modelling a timeout -- it is modelling the
+        # failed-acknowledgement anomaly, which is deliberately NOT a timeout.
+        #
+        # The ack needs the zero timeout STILL PATCHED when it runs. `presentation_ack` imports
+        # DEFAULT_TIMEOUT inside its own function, so it reads selection's value at CALL time --
+        # and since 2026-10-10 the ack RE-ANCHORS the deadline
+        # (`timeout_deadline_utc = now + timeout`). At the real five minutes it would hand this
+        # opportunity a live deadline and the submission would never be late, which is the
+        # opposite of what this fixture tests.
+        original_ack_timeout = opportunity_selection_module.DEFAULT_TIMEOUT
+        opportunity_selection_module.DEFAULT_TIMEOUT = timedelta(seconds=0)
+        try:
+            client.post(
+                f"/api/v1/b/sessions/{session_id}/opportunities/{opp_a_id}/presented",
+                json=None,
+                headers=headers(str(uuid4())),
+            )
+        finally:
+            opportunity_selection_module.DEFAULT_TIMEOUT = original_ack_timeout
+
         import time
 
         time.sleep(0.05)
@@ -831,7 +881,7 @@ def test_public_payloads_and_structured_logs_carry_no_forbidden_fields_across_ev
     bundle_record = asyncio.run(_ensure_engineering_test_bundle())
     learner = f"learner-be4f-privacy-scan-{uuid4()}"
 
-    caplog.set_level(logging.INFO, logger="upadya.http")
+    caplog.set_level(logging.INFO, logger="studentapp.http")
     client = client_for(learner, bundle_record=bundle_record)
     responses: list[tuple[str, dict]] = []
     try:

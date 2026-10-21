@@ -1,19 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
-import { BlurView } from 'expo-blur';
 import * as Crypto from 'expo-crypto';
 import * as Haptics from 'expo-haptics';
-import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import Animated, {
-  Easing,
-  ZoomIn,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-} from 'react-native-reanimated';
+import Animated, { ZoomIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type {
@@ -21,10 +12,16 @@ import type {
   PendingRequestAssistCommand,
   PendingSubmitResponseCommand,
 } from '@/src/api/contracts';
+import { FrostedScrim } from '@/src/components/frosted-scrim';
 import { createComponentBApi } from '@/src/api/component-b-api';
 import { ApiClientError } from '@/src/api/errors';
-import type { AttemptResponse } from '@/src/api/generated/openapi-types';
+import type {
+  AttemptResponse,
+  OpportunityAdvanceResponse,
+  OpportunityPresentationResponse,
+} from '@/src/api/generated/openapi-types';
 import { useAuth } from '@/src/auth/auth-context';
+import { takeBSessionPrefetch } from '@/src/features/session/b-session-prefetch-cache';
 import { AppText } from '@/src/components/app-text';
 import { useAdventureCharge } from '@/src/features/navigation/adventure-charge-context';
 import { readPublicConfig } from '@/src/config/env';
@@ -59,6 +56,8 @@ import {
   loadPendingCommand,
   savePendingCommand,
 } from '@/src/features/session/session-command-store';
+import { skillBarChanges, type SkillBarChange } from '@/src/features/session/session-mastery-change';
+import { captureMasterySnapshot, readMasterySnapshot } from '@/src/features/session/session-mastery-snapshot';
 import { SessionResultsScreen } from '@/src/features/session/session-results-screen';
 import {
   accentForSkill,
@@ -72,6 +71,12 @@ import { ChoiceGrid } from '@/src/features/session/renderers/choice-grid';
 import { CountSelection } from '@/src/features/session/renderers/count-selection';
 import { FreeEntry } from '@/src/features/session/renderers/free-entry';
 import type { AnswerState } from '@/src/features/session/renderers/types';
+import {
+  GRADIENT_WASH_ALPHA,
+  RotatingGradientBackground,
+  withAlpha,
+} from '@/src/features/session/rotating-gradient-background';
+import { createSubmitGate } from '@/src/utils/submit-gate';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 
 // FE-3b: select the question, render it, accept an answer, submit it, show the outcome.
@@ -108,10 +113,6 @@ const TASK_FOOTER_BOTTOM_GAP = (spacing.smPlus + TASK_PANEL_BORDER_WIDTH) * 2;
 // `pickBackgroundGradientColors` can return is exactly this shape). `alphaHex` is a 2-digit hex
 // byte, e.g. `'33'` for ~20% opacity — this is what keeps the background gradient "faded" rather
 // than the game-type colours appearing at full saturation behind the card.
-function withAlpha(hex: string, alphaHex: string): string {
-  return `${hex}${alphaHex}`;
-}
-
 const failureCopy: Record<SessionFailure, { title: string; detail: string }> = {
   authentication: { title: 'Sign-in needed', detail: 'Ask a grown-up to help you sign in again.' },
   conflict: { title: 'One moment', detail: "Something changed — let's take another look." },
@@ -119,8 +120,33 @@ const failureCopy: Record<SessionFailure, { title: string; detail: string }> = {
   technical: { title: 'Something went wrong', detail: 'Try again in a little while.' },
 };
 
+/**
+ * Presentation-acknowledgement retry budget (A2, widened 2026-10-10).
+ *
+ * FOUR attempts over ~6s, not two over 0.4s. The original budget assumed the thing being recovered
+ * from was a dropped packet. It is not: the failure actually observed was the API being
+ * unavailable for several seconds (a container restart), which a 400ms ladder cannot outlive.
+ *
+ * Why this matters more than it looks. If the acknowledgement never lands, `presented_at_utc` stays
+ * null and the deadline the SERVER judges against remains the fail-safe written at selection --
+ * and since Home now warms the question well before the child opens it, that fail-safe can already
+ * be minutes old. The child then answers a question they have only just seen and is told "Time's
+ * up". That exact sequence was observed on 2026-10-09.
+ *
+ * Still bounded, and still safe to retry: the call is idempotent (first acknowledgement wins, later
+ * ones return the same deadline), so no retry can extend or reset an established deadline. The
+ * backoff grows so a genuinely dead network costs four requests, not a stream of them.
+ */
+const PRESENTATION_ACK_ATTEMPTS = 4;
+const PRESENTATION_ACK_RETRY_DELAYS_MS = [400, 1500, 4000];
+
 export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
-  const { getAccessToken } = useAuth();
+  const { getAccessToken, me } = useAuth();
+  // The authenticated Supabase subject. Keys the Home->prep prefetch handoff AND scopes every
+  // local recovery record for this learner (B3) -- see session-command-store.ts.
+  const subject = me?.principal.user_id ?? null;
+  // The opportunity whose render has already been acknowledged, so a re-render does not re-send.
+  const ackedOpportunityRef = useRef<string | null>(null);
   const { awardForSession } = useAdventureCharge();
   const configResult = useMemo(() => readPublicConfig(), []);
   const api = useMemo(
@@ -138,6 +164,13 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
   // report it — showing nothing is more honest than seeding a client-side guess.
   const [progress, setProgress] = useState<SessionProgress | null>(null);
   const [advancing, setAdvancing] = useState(false);
+  /** An advance already in flight (or finished) for the question on screen, so that pressing
+   * "Next question" renders rather than waits. See the effect that fills it. */
+  const advancePrefetchRef = useRef<{
+    itemOpportunityId: string;
+    command: PendingCompleteOpportunityCommand;
+    promise: Promise<OpportunityAdvanceResponse>;
+  } | null>(null);
   // Measured via onLayout rather than computed from static style tokens: the skill pill's
   // rendered height depends on font metrics this file does not control, so matching "the same gap"
   // the user asked for (pill-bottom-to-prompt-card-top, reused as the footer's own bottom gap)
@@ -149,6 +182,19 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
   const [promptCardTop, setPromptCardTop] = useState<number | null>(null);
   const mountedRef = useRef(true);
   const runningRef = useRef(false);
+  /**
+   * The answer-submission re-entry gate. `submitting` above is a render-only mirror of it, for the
+   * button's busy indicator, and is NEVER read to decide whether a submission may proceed --
+   * `setState` is asynchronous, so two taps in one frame both read the pre-update `false` and both
+   * pass. Component C has held this exact gate since it shipped; B gated on the state alone, so a
+   * double tap sent two requests with two FRESH idempotency keys and the server recorded a real
+   * second attempt. See src/utils/submit-gate.ts for why `attempt_index == 2` is a research-data
+   * defect even though the BKT observation itself is protected.
+   *
+   * Deliberately separate from `runningRef`, which guards `presentOpportunity` (the bootstrap).
+   * Sharing one cell would make a submit in flight block a re-present, and vice versa.
+   */
+  const submitGateRef = useRef(createSubmitGate());
   // client_elapsed_ms is telemetry only and is never read for correctness (server timestamps are
   // authoritative). Measured from the moment the question surface becomes answerable — which is
   // also reset when the child chooses to try again — to the submit tap.
@@ -177,18 +223,26 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
 
   const applyAttempt = useCallback(async (attempt: AttemptResponse) => {
     // The attempt is recorded server-side; the local recovery record has done its job.
-    await clearPendingCommand();
+    await clearPendingCommand(subject);
     if (!mountedRef.current) return;
     const classified = classifyAttemptOutcome(attempt);
     setOutcome(classified);
     // A gentle buzz only — feedback, not judgement. Never awaited: haptics failing (no vibration
     // hardware, permission denied) must never block the outcome from showing.
-    void Haptics.notificationAsync(
+    //
+    // `.catch` and not bare `void`: `void` makes the call non-blocking but leaves a rejection
+    // UNHANDLED, and on a device an unhandled rejection is not silent -- it raises the same
+    // full-screen error overlay that a bad SecureStore key raised from this app's own storage
+    // layer. The two failure modes named above are exactly the ones a cheap Android handset hits,
+    // so without this the verdict screen would break on the hardware least able to buzz.
+    Haptics.notificationAsync(
       classified === 'correct'
         ? Haptics.NotificationFeedbackType.Success
         : Haptics.NotificationFeedbackType.Warning,
-    );
-  }, []);
+    ).catch(() => {
+      /* no vibration is a fine outcome; a crashed verdict screen is not. */
+    });
+  }, [subject]);
 
   /**
    * Mount (and post-409 resync) path.
@@ -197,14 +251,18 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
    * already-open question rather than minting a new one, which is exactly what makes it the
    * crash-recovery entry point. Calling it after a relaunch returns the same item_opportunity_id.
    */
-  const presentOpportunity = useCallback(async () => {
+  const presentOpportunity = useCallback(async (preloaded?: OpportunityPresentationResponse) => {
     if (!api || runningRef.current) return;
     runningRef.current = true;
-    setPhase({ kind: 'loading' });
+    // A preloaded question is already in hand, so there is nothing to wait for and no loading
+    // phase to show -- that is the entire point of Home's prefetch (b-session-prefetch.ts). Every
+    // other caller (mount without a prefetch, post-409 resync, advancing to the next question)
+    // still shows it, unchanged.
+    if (!preloaded) setPhase({ kind: 'loading' });
     setOutcome(null);
     setSubmitting(false);
     try {
-      const presentation = await withToken((token) => api.selectOpportunity(sessionId, token));
+      const presentation = preloaded ?? (await withToken((token) => api.selectOpportunity(sessionId, token)));
       if (!mountedRef.current) return;
       const plan = planPresentation(presentation, presentation.request_id);
       if (plan.kind !== 'render') {
@@ -224,9 +282,9 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
       // key, same body — so the server returns the original attempt instead of recording a second
       // one. A saved submit for a different opportunity belongs to a question that has already
       // moved on, so it is discarded rather than sent.
-      const decision = decidePendingReplay(await loadPendingCommand(), sessionId, plan.itemOpportunityId);
+      const decision = decidePendingReplay(await loadPendingCommand(subject), sessionId, plan.itemOpportunityId);
       if (decision.action === 'discard') {
-        await clearPendingCommand();
+        await clearPendingCommand(subject);
         return;
       }
       if (decision.action === 'replay') {
@@ -269,7 +327,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
           // 409 means the server's view of this opportunity has moved on. Re-ask it what to show
           // and render whatever comes back — never a client-side rule about what "should" have
           // happened.
-          await clearPendingCommand();
+          await clearPendingCommand(subject);
           if (mountedRef.current) await presentOpportunity();
           return;
         }
@@ -280,7 +338,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
         if (mountedRef.current) setSubmitting(false);
       }
     },
-    [api, applyAttempt, presentOpportunity, withToken],
+    [api, applyAttempt, presentOpportunity, subject, withToken],
   );
 
   const submitAnswer = useCallback(async () => {
@@ -290,25 +348,44 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     // submittable value" must never become "send something anyway".
     if (submittedValue === null) return;
 
-    const command: PendingSubmitResponseCommand = {
-      body: {
-        client_elapsed_ms: Math.max(0, Date.now() - shownAtRef.current),
-        submitted_value: submittedValue,
-      },
-      createdAt: new Date().toISOString(),
-      endpoint: '/api/v1/b/sessions/{sessionId}/opportunities/{itemOpportunityId}/responses',
-      idempotencyKey: Crypto.randomUUID(),
-      itemOpportunityId: phase.plan.itemOpportunityId,
-      kind: 'submit_response',
-      sessionId,
-    };
-    // Persisted *before* the request, never after: if the response is lost, the key and the exact
-    // body survive. The server fingerprints the body into the idempotency record, so a replay must
-    // resend the saved body — one reconstructed later would fail the fingerprint check, and
-    // client_elapsed_ms is unrecoverable after a relaunch.
-    await savePendingCommand(command);
-    await sendSubmit(command);
-  }, [answer, phase, sendSubmit, sessionId, submitting]);
+    // THE RE-ENTRY GATE, taken BEFORE the first `await` and before the command is persisted.
+    //
+    // The `submitting` check above cannot do this job on its own: it reads React state, which is
+    // updated asynchronously, so two taps dispatched in the same frame both see `false`.
+    //
+    // The position matters as much as the gate. It has to be above `savePendingCommand`, not
+    // merely above the network call: each tap builds its own command with a FRESH
+    // `Crypto.randomUUID()` key, so two taps reaching the write would have the second command
+    // overwrite the first in the single pending slot while the first request was still in flight
+    // -- leaving the stored replay record pointing at a key whose request never happened, and
+    // losing the record for the one that did. Gating inside `sendSubmit` would not prevent that.
+    if (!submitGateRef.current.tryEnter()) return;
+    try {
+      const command: PendingSubmitResponseCommand = {
+        body: {
+          client_elapsed_ms: Math.max(0, Date.now() - shownAtRef.current),
+          submitted_value: submittedValue,
+        },
+        createdAt: new Date().toISOString(),
+        endpoint: '/api/v1/b/sessions/{sessionId}/opportunities/{itemOpportunityId}/responses',
+        idempotencyKey: Crypto.randomUUID(),
+        itemOpportunityId: phase.plan.itemOpportunityId,
+        kind: 'submit_response',
+        sessionId,
+      };
+      // Persisted *before* the request, never after: if the response is lost, the key and the exact
+      // body survive. The server fingerprints the body into the idempotency record, so a replay must
+      // resend the saved body — one reconstructed later would fail the fingerprint check, and
+      // client_elapsed_ms is unrecoverable after a relaunch.
+      await savePendingCommand(subject, command);
+      await sendSubmit(command);
+    } finally {
+      // `finally`, not the happy path: `sendSubmit` handles its own failures rather than
+      // rethrowing, but an early return or any future throw must still release the gate or the
+      // answer surface locks permanently for the rest of the question.
+      submitGateRef.current.release();
+    }
+  }, [answer, phase, sendSubmit, sessionId, subject, submitting]);
 
   /**
    * Ask for the next hint. The client never requests or sends a level — the server derives it from
@@ -334,7 +411,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     // server count that first event and escalate — the child would silently never see L1, the
     // gentlest hint. Replaying the saved key returns the original level and content instead.
     const pending = decidePendingAssist(
-      await loadPendingCommand(),
+      await loadPendingCommand(subject),
       sessionId,
       phase.plan.itemOpportunityId,
     );
@@ -353,7 +430,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     setRequestingHint(true);
     try {
       // Persisted before the request, never after — that ordering is the whole protection.
-      if (pending.action !== 'reuse') await savePendingCommand(command);
+      if (pending.action !== 'reuse') await savePendingCommand(subject, command);
       const hint = await withToken((token) =>
         api.requestAssist(
           command.sessionId,
@@ -362,14 +439,14 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
           token,
         ),
       );
-      await clearPendingCommand();
+      await clearPendingCommand(subject);
       if (!mountedRef.current) return;
       setHints((current) => recordHint(hintStateFor(current, hint.item_opportunity_id), hint));
     } catch (error) {
       const failure = classifyFailure(error);
       if (failure === 'conflict') {
         // The normal case. The key has done its job; there is nothing left to replay.
-        await clearPendingCommand();
+        await clearPendingCommand(subject);
         if (!mountedRef.current) return;
         setHints((current) =>
           markHintsUnavailable(hintStateFor(current, command.itemOpportunityId)),
@@ -383,7 +460,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     } finally {
       if (mountedRef.current) setRequestingHint(false);
     }
-  }, [api, hints, phase, requestingHint, sessionId, withToken]);
+  }, [api, hints, phase, requestingHint, sessionId, subject, withToken]);
 
   /**
    * Move to the next question.
@@ -395,27 +472,27 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
    * cleared only on success — a lost response retried with a *fresh* key would risk closing an
    * opportunity twice.
    */
-  const advance = useCallback(async () => {
-    if (!api || phase.kind !== 'question' || advancing) return;
-    // Advancing requires at least one recorded attempt (session_completion.py:321-325); the
-    // control is gated on an outcome being on screen, so this is belt-and-braces.
-    if (!canAdvance(outcome !== null)) return;
-
-    const command: PendingCompleteOpportunityCommand = {
+  const buildAdvanceCommand = useCallback(
+    (itemOpportunityId: string): PendingCompleteOpportunityCommand => ({
       createdAt: new Date().toISOString(),
       endpoint: '/api/v1/b/sessions/{sessionId}/opportunities/{itemOpportunityId}/complete',
       idempotencyKey: Crypto.randomUUID(),
-      itemOpportunityId: phase.plan.itemOpportunityId,
+      itemOpportunityId,
       kind: 'complete_opportunity',
       sessionId,
-    };
+    }),
+    [sessionId],
+  );
 
-    setAdvancing(true);
-    try {
+  /** The advance request itself, with no state handling -- so it can run either from the button or
+   * ahead of it (see the prefetch effect below) and be applied at whichever moment is right. */
+  const sendAdvance = useCallback(
+    async (command: PendingCompleteOpportunityCommand): Promise<OpportunityAdvanceResponse> => {
+      if (!api) throw new Error('advance without an API');
       // Overwrites the shared pending slot, which is correct here: any command still sitting in it
       // belongs to the question being left behind (FE-3d's assist key, for instance), and a stale
       // command must never survive into the next question.
-      await savePendingCommand(command);
+      await savePendingCommand(subject, command);
       const response = await withToken((token) =>
         api.completeOpportunity(
           command.sessionId,
@@ -424,7 +501,43 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
           token,
         ),
       );
-      await clearPendingCommand();
+      await clearPendingCommand(subject);
+      return response;
+    },
+    [api, subject, withToken],
+  );
+
+  const advance = useCallback(async () => {
+    if (!api || phase.kind !== 'question' || advancing) return;
+    // Advancing requires at least one recorded attempt (session_completion.py:321-325); the
+    // control is gated on an outcome being on screen, so this is belt-and-braces.
+    if (!canAdvance(outcome !== null)) return;
+
+    const itemOpportunityId = phase.plan.itemOpportunityId;
+    const prefetched =
+      advancePrefetchRef.current?.itemOpportunityId === itemOpportunityId
+        ? advancePrefetchRef.current
+        : null;
+    // The SAME command as the prefetch, never a fresh one. If the prefetch failed, retrying with
+    // its original idempotency key is safe by construction -- the fingerprint is
+    // {session_id, item_opportunity_id}, so a replay returns the original advance rather than
+    // closing the opportunity a second time. A new key would be the double-close this whole flow
+    // is careful to avoid.
+    const command = prefetched?.command ?? buildAdvanceCommand(itemOpportunityId);
+
+    setAdvancing(true);
+    try {
+      let response: OpportunityAdvanceResponse;
+      if (prefetched) {
+        try {
+          response = await prefetched.promise;
+        } catch {
+          response = await sendAdvance(command);
+        }
+      } else {
+        response = await sendAdvance(command);
+      }
+      advancePrefetchRef.current = null;
       if (!mountedRef.current) return;
 
       const decision = decideAdvance(response);
@@ -458,7 +571,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
         // Almost certainly "no attempt recorded yet" or a state that has already moved on. Re-ask
         // POST /opportunities and render whatever the server returns — never a client-side rule
         // about what should have happened.
-        await clearPendingCommand();
+        await clearPendingCommand(subject);
         if (mountedRef.current) await presentOpportunity();
         return;
       }
@@ -466,7 +579,68 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     } finally {
       if (mountedRef.current) setAdvancing(false);
     }
-  }, [advancing, api, outcome, phase, presentOpportunity, sessionId, withToken]);
+  }, [advancing, api, buildAdvanceCommand, outcome, phase, presentOpportunity, sendAdvance, subject]);
+
+  // PRE-ADVANCE. The moment a verdict is on screen and the question is genuinely finished, ask the
+  // server for the next one -- while the child is still reading "Nice work!". By the time they
+  // press "Next question" the response is normally already in hand, so the next question appears
+  // instead of a loading state.
+  //
+  // ONLY WHEN THE CHILD CANNOT TRY AGAIN. Advancing CLOSES the current opportunity, and an
+  // incorrect answer still offers "TRY AGAIN" on the very same one (`tryAgain` below just clears
+  // the outcome and lets them answer again). Pre-advancing there would close the question out from
+  // under a child who is about to retry it, and the retry would be rejected by a server that has
+  // already moved on. `canTryAgain` is false for exactly the terminal outcomes -- correct, and
+  // timeout -- which are the only ones this fires for.
+  //
+  // This does not change WHICH question comes next. Selection is adaptive and server-side, and it
+  // happens after the attempt is recorded either way; starting the request earlier only moves the
+  // waiting, never the choosing.
+  //
+  // Best-effort: a rejection is held and retried by `advance` under the SAME idempotency key, so a
+  // failed pre-advance costs nothing and cannot double-close.
+  const primeAdvance = useCallback(() => {
+    if (!api || phase.kind !== 'question' || outcome === null) return;
+    const itemOpportunityId = phase.plan.itemOpportunityId;
+    if (advancePrefetchRef.current?.itemOpportunityId === itemOpportunityId) return;
+    const command = buildAdvanceCommand(itemOpportunityId);
+    const promise = sendAdvance(command);
+    // Parked, not handled here: `advance` awaits this same promise and owns every outcome. The
+    // no-op catch only stops an unhandled rejection warning in the meantime.
+    promise.catch(() => undefined);
+    advancePrefetchRef.current = { command, itemOpportunityId, promise };
+  }, [api, buildAdvanceCommand, outcome, phase, sendAdvance]);
+
+  useEffect(() => {
+    if (outcome === null || outcomeView(outcome).canTryAgain) return;
+    primeAdvance();
+  }, [outcome, primeAdvance]);
+
+  /**
+   * THE WRONG-ANSWER CASE, which the effect above deliberately will not cover.
+   *
+   * A wrong answer keeps TRY AGAIN, and TRY AGAIN needs this opportunity still OPEN -- so the
+   * next question cannot be fetched in advance. That is not an API preference but a database
+   * rule: `uq_b_item_opportunities_one_open_per_session` is a partial unique index allowing ONE
+   * open opportunity per session, so the next question cannot exist while this one does.
+   *
+   * What is left is the gap between the child's finger landing on "Next question" and lifting
+   * off. Starting `complete` on press-IN spends that gap on the round trip instead of on nothing.
+   * It is small -- roughly 100-300ms -- but it is the only overlap available without taking TRY
+   * AGAIN away, and the owner's instruction was to keep it (2026-10-10).
+   *
+   * Safe for TRY AGAIN: this fires only when the child reaches for Next. Press TRY AGAIN and
+   * `complete` is never sent, so the opportunity stays open and the retry works untouched.
+   *
+   * The one edge: pressing down on Next, sliding off, then pressing TRY AGAIN. `complete` has
+   * already closed the opportunity, so the retry submit gets a 409 -- which the existing conflict
+   * handler turns into a re-present rather than an error. Degraded, not broken, and it costs a
+   * deliberate gesture to reach.
+   */
+  const primeAdvanceOnIntent = useCallback(() => {
+    if (outcome === null) return;
+    primeAdvance();
+  }, [outcome, primeAdvance]);
 
   const tryAgain = useCallback(() => {
     if (phase.kind !== 'question') return;
@@ -475,17 +649,101 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     shownAtRef.current = Date.now();
   }, [phase]);
 
+  // PRESENTATION ACKNOWLEDGEMENT (owner ruling, 2026-09-27). The answering clock starts HERE --
+  // when the question is rendered -- not when it was selected. Selection now happens well before
+  // the child is looking at anything (Home and /prepare both prefetch), and the governance
+  // register rules that "infrastructure failure is never learner failure", so server and network
+  // time must not be spent from the child's five minutes.
+  //
+  // Fired once per opportunity: `ackedOpportunityRef` guards a re-render, and the server itself is
+  // the real guarantee -- the first acknowledgement anchors and every later one returns the same
+  // deadline, so a remount or a relaunch can neither extend nor shorten what the child has.
+  //
+  // Best-effort and deliberately silent, but no longer single-shot (A2, 2026-10-10). A failure
+  // leaves the fail-safe deadline written at SELECTION, and that is the one the server judges a
+  // submission against -- so a lost acknowledgement is the one case where time spent before the
+  // child saw the question can still be charged to them. The window is widest exactly where it
+  // matters least to notice: a long dwell on the preparation screen.
+  //
+  // TWO ATTEMPTS TOTAL, then stop. The request is idempotent by construction -- the first
+  // acknowledgement anchors and every later one is a no-op returning the SAME deadline
+  // (`anchor_presentation` returns early once `presented_at_utc` is set) -- so a retry can never
+  // extend or reset a deadline that already exists. That property is what makes retrying safe; it
+  // is not a licence to retry indefinitely, and a bounded count keeps a dead network from
+  // generating background traffic behind a child who is simply reading.
+  //
+  // Still silent: a transient failure must not put a technical error in front of a child, and
+  // after both attempts fail the behaviour is exactly what it was before this retry existed.
+  // `ackedOpportunityRef` is set BEFORE the first attempt, so a re-render during the retry cannot
+  // start a second ladder; the unmount check before each attempt stops a navigated-away screen
+  // from issuing one.
+  useEffect(() => {
+    if (phase.kind !== 'question' || !api) return;
+    const opportunityId = phase.plan.itemOpportunityId;
+    if (ackedOpportunityRef.current === opportunityId) return;
+    ackedOpportunityRef.current = opportunityId;
+
+    let cancelled = false;
+    void (async () => {
+      for (let attempt = 1; attempt <= PRESENTATION_ACK_ATTEMPTS; attempt += 1) {
+        if (cancelled || !mountedRef.current) return;
+        try {
+          const ack = await withToken((token) =>
+            api.acknowledgePresentation(sessionId, opportunityId, token),
+          );
+          if (cancelled || !mountedRef.current) return;
+          // Adopt the server's anchored deadline: it is normally LATER than the one the
+          // presentation carried, and it is the one the server will judge a submission against.
+          setPhase((current) =>
+            current.kind === 'question' && current.plan.itemOpportunityId === opportunityId
+              ? { ...current, plan: { ...current.plan, timeoutDeadlineUtc: ack.server_timeout_deadline_utc } }
+              : current,
+          );
+          return;
+        } catch {
+          // Fall through to the one retry, then give up and keep the selection-time deadline.
+          if (attempt < PRESENTATION_ACK_ATTEMPTS) {
+            const delay = PRESENTATION_ACK_RETRY_DELAYS_MS[attempt - 1] ?? 4000;
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [api, phase, sessionId, withToken]);
+
   useEffect(() => {
     mountedRef.current = true;
     if (!api) {
       setPhase({ kind: 'failure', failure: 'technical', requestId: null });
     } else {
-      void presentOpportunity();
+      void (async () => {
+        // Home's hero/resume press prefetched this session's first question and the preparation
+        // screen already awaited it, so this entry is normally resolved and applies without a
+        // network call or a loading phase. `take` is single-use: a later re-entry (relaunch, deep
+        // link, retry) finds nothing and runs the normal path below, which re-issues the same
+        // already-OPEN opportunity anyway. A prefetch that failed or handed back `null` falls
+        // through to exactly the behaviour that existed before it.
+        const prefetch = subject ? takeBSessionPrefetch(subject) : null;
+        let preloaded: OpportunityPresentationResponse | undefined;
+        if (prefetch) {
+          try {
+            const result = await prefetch;
+            if (result && result.sessionId === sessionId) preloaded = result.presentation;
+          } catch {
+            // Fall through to the normal fetch.
+          }
+        }
+        if (mountedRef.current) await presentOpportunity(preloaded);
+      })();
     }
     return () => {
       mountedRef.current = false;
     };
-  }, [api, presentOpportunity]);
+  }, [api, subject, presentOpportunity, sessionId]);
 
   // Charges the adventure battery exactly once per genuinely completed Component B session --
   // `phase.kind === 'completed'` is the same real, backend-driven completion state
@@ -497,6 +755,55 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
 
   const goHome = useCallback(() => router.replace('/(learner)/home'), []);
 
+  // --- RESULTS MASTERY BARS (owner decision, 2026-10-20) -------------------------------------
+  //
+  // This surface was deliberately non-evaluative; showing what moved reverses that, knowingly.
+  // See session-mastery-snapshot.ts and buildLog2.md's entry for the decision and its two costs.
+  const [masteryChanges, setMasteryChanges] = useState<readonly SkillBarChange[]>([]);
+
+  // PHOTOGRAPH THE STARTING STATE, once, as early as the screen can. The snapshot module ignores
+  // every call after the first for a session, so a remount or a crash-recovery resume cannot
+  // re-baseline it to a mid-session state and erase the child's own progress from the screen.
+  useEffect(() => {
+    let cancelled = false;
+    const capture = async () => {
+      if (!api) return;
+      try {
+        const response = await withToken((token) => api.getLearnerSkillStates(token));
+        if (!cancelled) captureMasterySnapshot(sessionId, response.skill_states);
+      } catch {
+        // Best effort. No snapshot simply means the results screen shows current mastery with no
+        // movement, which is a supported state -- never an error in front of a child.
+      }
+    };
+    void capture();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, sessionId, withToken]);
+
+  // Read the CURRENT state once the session is over, and compare. Deliberately not fetched earlier:
+  // the whole point is the value after the last answer was scored.
+  useEffect(() => {
+    if (phase.kind !== 'completed') return;
+    let cancelled = false;
+    const compare = async () => {
+      if (!api) return;
+      try {
+        const response = await withToken((token) => api.getLearnerSkillStates(token));
+        if (cancelled) return;
+        setMasteryChanges(skillBarChanges(readMasterySnapshot(sessionId), response.skill_states));
+      } catch {
+        // Leaving `masteryChanges` empty renders the bars at zero with no animation rather than
+        // an error. The counts above them are still true.
+      }
+    };
+    void compare();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, phase.kind, sessionId, withToken]);
+
   /**
    * Leaving a finished session. The stored active-session id has done its job; leaving it behind
    * would let a later launch offer "Resume" and then try to resume a session the server has already
@@ -505,9 +812,9 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
    * return to, and the child lands on preparation and starts fresh.
    */
   const exitSession = useCallback(async () => {
-    await clearActiveSessionId();
+    await clearActiveSessionId(subject);
     goHome();
-  }, [goHome]);
+  }, [goHome, subject]);
 
   // Computed here, above every early `return`, because it is a Hook (`useMemo`) — Hooks must run
   // on every render in the same order, so it cannot live down in the 'question'-only render path
@@ -540,7 +847,14 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
     // The progress numbers come straight from the completion response — GET /summary is not called
     // (see component-b-api.ts's note on getSessionSummary). See SessionResultsScreen for why this
     // surface carries counts and nothing evaluative.
-    return <SessionResultsScreen onExit={() => void exitSession()} progress={phase.progress} />;
+    return (
+      <SessionResultsScreen
+        changes={masteryChanges}
+        onExit={() => void exitSession()}
+        onPlayAgain={() => router.replace('/(learner)/prepare')}
+        progress={phase.progress}
+      />
+    );
   }
 
   if (phase.kind === 'unrenderable' || phase.kind === 'failure') {
@@ -626,7 +940,10 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
           wash over that base rather than a replacement for it. Rotates continuously — see
           RotatingGradientBackground. */}
       <RotatingGradientBackground
-        colors={[withAlpha(gradientColors[0], '33'), withAlpha(gradientColors[1], '33')]}
+        colors={[
+          withAlpha(gradientColors[0], GRADIENT_WASH_ALPHA),
+          withAlpha(gradientColors[1], GRADIENT_WASH_ALPHA),
+        ]}
       />
       <View style={styles.taskCanvas}>
         <View style={[styles.taskPanel, { borderColor: accent }]}>
@@ -727,6 +1044,15 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
         <View
           onLayout={(event) => setPromptCardTop(event.nativeEvent.layout.y)}
           style={[styles.promptCard, progress && styles.promptCardAfterProgress]}>
+          {/* The server's authored instruction, above the stem, for the templates whose stem is
+              not a question on its own -- "Guess the next number." over a bare "2, 3, 4, __".
+              Server-supplied and relayed verbatim; the app never composes one. Most templates send
+              none, and those render exactly as before. Styled as the question (see `instruction`
+              in the stylesheet): where one exists it IS the question, and the stem below it is the
+              material -- the numbers to continue. */}
+          {plan.instruction ? (
+            <AppText style={styles.instruction}>{plan.instruction}</AppText>
+          ) : null}
           <AppText style={styles.stem}>{plan.stem}</AppText>
           {/* FE-3g — the concrete representation the question refers to. `prompt` carries content
               keys beyond `stem`, and rendering only the stem left 7 of 14 Grade 2 templates
@@ -735,7 +1061,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
               counting, no comparing, no checking the child. */}
           {passiveVisual ? (
             <View style={styles.visual}>
-              <PromptVisual spec={passiveVisual} />
+              <PromptVisual seed={plan.itemOpportunityId} spec={passiveVisual} />
             </View>
           ) : null}
         </View>
@@ -818,7 +1144,7 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
           rather than swallowing input the rest of the card never offered. */}
       {view ? (
         <View pointerEvents="box-none" style={styles.outcomeOverlay}>
-          <BlurView intensity={40} style={styles.outcomeOverlay} tint="light" />
+          <FrostedScrim intensity={40} style={styles.outcomeOverlay} />
           <View pointerEvents="box-none" style={styles.outcomePopupCenter}>
             <Animated.View
               entering={ZoomIn.duration(280).springify().damping(14)}
@@ -885,6 +1211,11 @@ export function LiveSessionScreen({ sessionId }: { sessionId: string }) {
                 busy={advancing}
                 label="NEXT QUESTION"
                 onPress={() => void advance()}
+                // Starts `complete` on finger-down so the round trip overlaps the press itself.
+                // For a correct or timed-out answer the pre-advance effect has already run and
+                // this is a no-op; for a WRONG answer it is the only overlap available, because
+                // TRY AGAIN needs the opportunity to stay open. See primeAdvanceOnIntent.
+                onPressIn={primeAdvanceOnIntent}
                 variant={view.canTryAgain ? 'secondary' : 'primary'}
               />
             ) : null}
@@ -931,56 +1262,6 @@ function SessionFrame({ children }: { children: React.ReactNode }) {
  * screen's centre, "around the screen's centre" falls out of that for free. `null` until the first
  * onLayout (nothing to size yet) renders nothing rather than a guessed box.
  */
-function RotatingGradientBackground({ colors: gradientColors }: { colors: readonly [string, string] }) {
-  const rotation = useSharedValue(0);
-  const [screenSize, setScreenSize] = useState<{ width: number; height: number } | null>(null);
-
-  useEffect(() => {
-    // -1 repeats forever; `false` (no reverse) keeps every lap clockwise, never swinging back
-    // counter-clockwise the way a reversing repeat would on alternate laps.
-    rotation.value = withRepeat(withTiming(360, { duration: 45000, easing: Easing.linear }), -1, false);
-  }, [rotation]);
-
-  const spinStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
-
-  const diagonal = screenSize
-    ? Math.ceil(Math.sqrt(screenSize.width ** 2 + screenSize.height ** 2))
-    : 0;
-
-  return (
-    <View
-      onLayout={(event) =>
-        setScreenSize({
-          width: event.nativeEvent.layout.width,
-          height: event.nativeEvent.layout.height,
-        })
-      }
-      pointerEvents="none"
-      style={styles.taskGradientBackground}>
-      {screenSize ? (
-        <Animated.View
-          style={[
-            spinStyle,
-            {
-              height: diagonal,
-              left: (screenSize.width - diagonal) / 2,
-              position: 'absolute',
-              top: (screenSize.height - diagonal) / 2,
-              width: diagonal,
-            },
-          ]}>
-          <LinearGradient
-            colors={gradientColors}
-            end={{ x: 1, y: 1 }}
-            start={{ x: 0, y: 0 }}
-            style={styles.taskGradientFill}
-          />
-        </Animated.View>
-      ) : null}
-    </View>
-  );
-}
-
 /**
  * The bar is presentational only: it reads `SessionProgress`, already clamped by
  * `clampCompleted`, and never derives or guesses a count of its own.
@@ -1008,12 +1289,15 @@ function PrimaryButton({
   disabled = false,
   label,
   onPress,
+  onPressIn,
   variant = 'primary',
 }: {
   busy?: boolean;
   disabled?: boolean;
   label: string;
   onPress: () => void;
+  /** Fired on finger-down, before release. Used to start work the press is about to need. */
+  onPressIn?: () => void;
   variant?: 'primary' | 'secondary';
 }) {
   const secondary = variant === 'secondary';
@@ -1023,6 +1307,7 @@ function PrimaryButton({
       accessibilityState={{ disabled: disabled || busy }}
       disabled={disabled || busy}
       onPress={onPress}
+      onPressIn={onPressIn}
       style={({ pressed }) => [
         styles.button,
         secondary && styles.buttonSecondary,
@@ -1100,7 +1385,7 @@ const styles = StyleSheet.create({
   },
   muted: { color: colors.textSecondary },
   // Fills `taskScrollWrapper` exactly (see the JSX comment above its usage) — used both for the
-  // BlurView layer and for the pointer-events wrapper around it, since both need the identical box.
+  // FrostedScrim layer and for the pointer-events wrapper around it: both need the identical box.
   outcomeOverlay: { bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
   // 50% of the scroll wrapper's own width/height, per the request — the wrapper IS the card's
   // working area (everything between the header row and the footer), so this reads as "half the
@@ -1205,6 +1490,18 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.sm,
     letterSpacing: typography.letterSpacing.label,
   },
+  // Deliberately the SAME type as `stem` below -- same family, size and line height -- because on
+  // the templates that carry one, the instruction IS the question ("Guess the next number."), and
+  // the stem under it is the material to work on ("2, 3, 4, __"), the way the dot grid is on
+  // B-NS02. Rendering it smaller and greyer, as it first was, read as a caption and buried the
+  // only sentence telling the child what to do. The single difference is the gap below it.
+  instruction: {
+    fontFamily: typography.fonts.display,
+    fontSize: typography.fontSize.subtitle,
+    lineHeight: typography.lineHeight.subtitle,
+    marginBottom: spacing.sm,
+    maxWidth: '100%',
+  },
   stem: {
     fontFamily: typography.fonts.display,
     fontSize: typography.fontSize.subtitle,
@@ -1265,15 +1562,6 @@ const styles = StyleSheet.create({
     shadowRadius: 7,
     width: '92%',
   },
-  taskGradientBackground: {
-    bottom: 0,
-    left: 0,
-    overflow: 'hidden',
-    position: 'absolute',
-    right: 0,
-    top: 0,
-  },
-  taskGradientFill: { flex: 1 },
   taskSafeArea: { backgroundColor: colors.background, flex: 1 },
   taskScroll: { flex: 1 },
   // `position: 'relative'` makes this the positioning root for `outcomeOverlay`'s absolute fill —

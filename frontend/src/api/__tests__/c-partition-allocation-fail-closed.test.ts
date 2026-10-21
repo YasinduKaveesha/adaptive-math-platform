@@ -16,7 +16,7 @@ function validTask(): CNextTaskResponse {
     game_task_template_id: 'C-EG-01',
     interactive_assets: {},
     prompt_payload: { number_of_groups: 3, group_size: 2 },
-    prompt_text: 'Build the groups shown, with the same number in each group.',
+    prompt_text: 'Make the groups. Put the same number in each.',
     representation_mode: 'TEST_FIXTURE_ONLY_REPRESENTATION',
     request_id: 'req-1',
     scaffold_state: 'C0',

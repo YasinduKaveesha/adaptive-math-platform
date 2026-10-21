@@ -10,16 +10,22 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { PendingStartSessionCommand, SessionCommandResponse } from '@/src/api/contracts';
+import { artwork } from '@/src/utils/artwork';
 import { createComponentBApi, getComponentBDevelopmentFixture } from '@/src/api/component-b-api';
 import { ApiClientError } from '@/src/api/errors';
 import type { ActiveSessionResponse } from '@/src/api/generated/openapi-types';
 import { useAuth } from '@/src/auth/auth-context';
 import { AppText } from '@/src/components/app-text';
 import { readPublicConfig } from '@/src/config/env';
-import { LearnerTabBar } from '@/src/features/navigation/learner-tab-bar';
+import { resolveResumableSessionId } from '@/src/features/session/resumable-session';
+import { prefetchBSessionBootstrap } from '@/src/features/session/b-session-prefetch';
+import {
+  dropBSessionPrefetch,
+  peekBSessionPrefetch,
+  putBSessionPrefetch,
+} from '@/src/features/session/b-session-prefetch-cache';
 import {
   clearPendingStartCommand,
   loadPendingStartCommand,
@@ -29,8 +35,8 @@ import {
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
 import { firstNameOf } from '@/src/utils/display-name';
 
-const brandArtwork = require('../../../assets/images/mathmingo-header.png');
-const heroArtwork = require('../../../assets/images/prepare-hero.png');
+const brandArtwork = artwork.mathmingoHeader;
+const heroArtwork = artwork.prepareHero;
 const heroAspectRatio = 1672 / 941;
 const heroBorderWidth = 4;
 
@@ -46,26 +52,10 @@ const gradeLabels: Record<'GRADE_2' | 'GRADE_3', string> = {
   GRADE_3: 'Grade 3',
 };
 
-// GET /api/v1/b/sessions/active is a UX affordance, not a correctness requirement: it exists so
-// the child sees "Resume" before tapping, instead of discovering it after. POST /api/v1/b/sessions
-// never 409s on an existing session (it takes an advisory lock, finds any starting-or-active
-// session for the learner, and returns it with 201 regardless of idempotency key — see
-// b_session_lifecycle.py:185-194), so a failed or stale read here is self-correcting: if a session
-// actually exists, starting "a new one" anyway just returns it. That is why this check is safe to
-// treat as best-effort — any failure (including the fixture, which does not implement this call)
-// degrades silently to the Start label rather than a new error phase.
-export async function resolveResumableSessionId(
-  api: { getActiveSession: (accessToken: string) => Promise<ActiveSessionResponse> },
-  accessToken: string,
-): Promise<string | null> {
-  try {
-    const { session } = await api.getActiveSession(accessToken);
-    if (session && session.state === 'active') return session.session_id;
-    return null;
-  } catch {
-    return null;
-  }
-}
+// `resolveResumableSessionId` moved to resumable-session.ts so the prefetch can use it without
+// importing this screen -- see that file for the require cycle it broke. Re-exported here
+// because this screen's own tests import it from this path.
+export { resolveResumableSessionId };
 
 type PreparationPhase =
   | 'checking-identity'
@@ -90,9 +80,14 @@ function createStartCommand(): PendingStartSessionCommand {
   };
 }
 
-function readinessCopy(phase: PreparationPhase) {
+function readinessCopy(phase: PreparationPhase, awaitingQuestion = false) {
   if (phase === 'checking-identity' || phase === 'checking-readiness') {
     return { title: 'Checking session', detail: 'Getting everything ready' };
+  }
+  // "Session ready" while the first question is still in flight was the lie behind the press-then-
+  // wait: the check had passed, but the thing the child is about to need had not arrived.
+  if (awaitingQuestion) {
+    return { title: 'Building your question', detail: 'Almost there…' };
   }
   if (phase === 'ready' || phase === 'starting-session' || phase === 'active-session') {
     return { title: 'Session ready', detail: 'Everything looks good!' };
@@ -124,17 +119,34 @@ export function SessionPreparationScreen() {
   const [resumableSessionId, setResumableSessionId] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const runningRef = useRef(false);
+  const autoAdvancedRef = useRef(false);
+  const subject = me?.principal.user_id ?? null;
+  // Whether the first question is actually in hand. Reaching this screen directly -- a typed URL,
+  // a relaunch, the tab bar -- brings no prefetch from Home, so this screen primes its own (see
+  // the effect below) and the button says what is really happening until it lands, instead of
+  // offering "Start Adventure" and then stalling on a press.
+  const [questionReady, setQuestionReady] = useState(false);
+  const primedRef = useRef(false);
+  // Declared HERE, with the state it derives from, rather than down beside `busy` where it is
+  // first used. React Compiler is enabled on this project and hoists derived values into memo
+  // blocks, which can evaluate them ahead of their written position -- a declaration sitting
+  // below the effects produced a "Cannot access 'awaitingQuestion' before initialization" at
+  // runtime that `tsc` cannot see. Keeping it above every effect removes the ordering hazard.
+  //
+  // A question that has not landed yet is a real reason to be busy: the press would otherwise
+  // succeed instantly and then stall on the session screen, which is the delay this removes.
+  const awaitingQuestion = phase === 'ready' && !questionReady && !fixture && subject !== null;
 
   const navigateToSession = useCallback(async (sessionId: string) => {
-    await saveActiveSessionId(sessionId);
-    await clearPendingStartCommand();
+    await saveActiveSessionId(subject, sessionId);
+    await clearPendingStartCommand(subject);
     if (!mountedRef.current) return;
     setPhase('active-session');
     router.replace({
       pathname: '/(learner)/session/[sessionId]',
       params: { sessionId },
     });
-  }, []);
+  }, [subject]);
 
   const openActiveSession = useCallback(
     async (response: SessionCommandResponse) => {
@@ -168,7 +180,7 @@ export function SessionPreparationScreen() {
           const sessionId = await resolveResumableSessionId(api, accessToken);
           if (mountedRef.current) {
             setResumableSessionId(sessionId);
-            if (sessionId) await saveActiveSessionId(sessionId);
+            if (sessionId) await saveActiveSessionId(subject, sessionId);
           }
         }
       }
@@ -191,7 +203,7 @@ export function SessionPreparationScreen() {
     } finally {
       runningRef.current = false;
     }
-  }, [api, fixture, getAccessToken]);
+  }, [api, fixture, getAccessToken, subject]);
 
   const sendStartCommand = useCallback(
     async (command: PendingStartSessionCommand, accessToken: string) => {
@@ -251,14 +263,42 @@ export function SessionPreparationScreen() {
         return;
       }
 
+      // Home's prefetch has usually already started the session and selected the question. Await
+      // it rather than POSTing again: /b/sessions would return the same session anyway (it takes
+      // an advisory lock and returns any starting-or-active one regardless of idempotency key),
+      // but the extra round trip is time spent from the question's already-running clock. The
+      // entry is only peeked here -- live-session-screen.tsx is what consumes it, so the question
+      // it carries survives this navigation.
+      if (subject) {
+        const prefetch = peekBSessionPrefetch(subject);
+        if (prefetch) {
+          try {
+            const result = await prefetch;
+            if (!mountedRef.current) return;
+            if (result) {
+              await navigateToSession(result.sessionId);
+              return;
+            }
+            // `null` means "nothing to hand off" (no token/config) -- fall through to the normal
+            // start path below, which owns the resulting failure phases.
+            dropBSessionPrefetch(subject);
+          } catch {
+            // A failed prefetch is not the child's problem: drop it and start normally, which is
+            // exactly the behaviour that existed before the prefetch did.
+            dropBSessionPrefetch(subject);
+            if (!mountedRef.current) return;
+          }
+        }
+      }
+
       let accessToken = fixture ? 'development-fixture-token' : await getAccessToken();
       if (!accessToken && !fixture) {
         setPhase('authentication-failure');
         return;
       }
-      const pending = await loadPendingStartCommand();
+      const pending = await loadPendingStartCommand(subject);
       const command = pending ?? createStartCommand();
-      if (!pending) await savePendingStartCommand(command);
+      if (!pending) await savePendingStartCommand(subject, command);
       accessToken ??= 'development-fixture-token';
       await sendStartCommand(command, accessToken);
     } finally {
@@ -273,8 +313,96 @@ export function SessionPreparationScreen() {
     phase,
     resumableSessionId,
     retryAuthorization,
+    subject,
     sendStartCommand,
   ]);
+
+  // Prime the question as soon as this screen knows who the learner is, and track when it lands.
+  // Home already starts one on its hero/resume press; this covers every other way in. Doing it
+  // here rather than only on Home is what removes the press-then-wait: by the time the button is
+  // offered, the question exists.
+  //
+  // NOT GATED ON `phase === 'ready'` ANY MORE (FE-005, 2026-10-09). It was, which meant that on
+  // every arrival WITHOUT a prefetch from Home -- a tab return, a relaunch, a deep link -- this
+  // waited for `checkReadiness()` to come back before it even started: `GET /health/ready` opens a
+  // database connection to run `SELECT 1`, measured at ~500ms warm and ~2.1s cold, and the session
+  // bootstrap then ran after it. Nothing required that order. Readiness answers "is the
+  // infrastructure up", which this screen uses only to choose a failure phase; it is not an input
+  // to starting a session, and the server re-checks everything that actually matters on each call.
+  // Both now run from mount, concurrently -- which is what b-session-prefetch.ts's own header
+  // already claimed happened ("the preparation screen runs it in parallel on its own mount") and
+  // what the `phase` gate was quietly preventing.
+  //
+  // Authorization is NOT weakened by starting earlier. The prefetch resolves a token or returns
+  // `null`, and every request it makes is still authorized server-side -- a learner without access
+  // gets a 403 and the prefetch rejects, which `startAdventure` already treats as "fall through to
+  // the normal path". A readiness failure likewise fails the session start itself rather than
+  // producing a session that cannot serve questions.
+  //
+  // `subject` is still required: without it there is no cache key, and the entry would be
+  // unreachable by the consumer.
+  useEffect(() => {
+    if (!subject || fixture) return;
+    let cancelled = false;
+    if (!peekBSessionPrefetch(subject) && !primedRef.current) {
+      primedRef.current = true;
+      putBSessionPrefetch(subject, prefetchBSessionBootstrap(subject, getAccessToken));
+    }
+    const pending = peekBSessionPrefetch(subject);
+    if (!pending) return;
+    // SETTLED is what "ready" means here, not "succeeded". A resolved `null` means the prefetch
+    // had nothing to hand off (no token, no config) and a rejection means it failed outright --
+    // in both cases `startAdventure` falls through to the normal start path, which works. Treating
+    // either as not-ready leaves the button stuck on "Getting ready..." forever, which is what an
+    // earlier `setQuestionReady(value !== null)` here actually did.
+    const settled = () => {
+      if (!cancelled && mountedRef.current) setQuestionReady(true);
+    };
+    void pending.then(settled, settled);
+    return () => {
+      cancelled = true;
+    };
+  }, [fixture, getAccessToken, subject]);
+
+  // AUTO-ADVANCE (owner ruling, 2026-09-27; BEHAVIOUR REAFFIRMED and this rationale CORRECTED
+  // 2026-10-10). Home's hero/resume buttons start a background prefetch (b-session-prefetch.ts)
+  // that has already started the session AND selected the first question by the time this screen
+  // settles. A prefetched FRESH start therefore goes straight through rather than waiting on a tap.
+  //
+  // WHY, stated correctly: continuity. The child sees ONE loading surface -- this screen's own
+  // artwork -- instead of it and then "Getting your question ready...", and one fewer tap stands
+  // between them and the question they already asked for.
+  //
+  // WHY NOT, and this is the correction: it is NOT needed to protect the child's five-minute
+  // answering budget. This comment used to say the prefetch "lit" that clock and auto-advancing
+  // bounded the burn. It does not. `POST .../presented` -> `anchor_presentation` sets
+  // `timeout_deadline_utc = now + timeout` on the FIRST acknowledgement, which
+  // live-session-screen.tsx sends when the question renders -- so the clock starts when the child
+  // can see the question, however long they spent on this screen. The backend is explicit that
+  // anchoring at selection "charged the child for server and network time -- prefetch included",
+  // which is why it stopped doing so. Do not re-justify auto-advance on clock grounds, and do not
+  // treat a child-paced wait on THIS screen as a hazard to the answering budget.
+  //
+  // Deliberately NOT auto-advanced:
+  //   - A resume. "Resume Adventure" is a real choice about re-entering work already in progress,
+  //     so skipping the tap takes that choice away. (Its question was already presented once, so
+  //     its deadline is already anchored and a second ack is a no-op either way.)
+  //   - Any screen reached without a prefetch (deep link, relaunch, tab return). The child never
+  //     asked to be sent straight in, so they keep the button.
+  //   - Any non-'ready' phase. Every failure phase keeps its own copy and its own retry.
+  useEffect(() => {
+    if (phase !== 'ready' || autoAdvancedRef.current) return;
+    if (!subject || resumableSessionId || fixture) return;
+    // Only once the question has actually landed -- auto-advancing into a still-loading question
+    // would just move the wait onto the session screen, which is the thing this removes. And only
+    // for a prefetch that came from Home's own press: a child who arrived here directly never
+    // asked to be sent straight in, so they keep the button.
+    if (primedRef.current || !questionReady) return;
+    if (!peekBSessionPrefetch(subject)) return;
+    autoAdvancedRef.current = true;
+    void startAdventure();
+  }, [fixture, phase, questionReady, resumableSessionId, startAdventure, subject]);
+
 
   useEffect(() => {
     mountedRef.current = true;
@@ -298,8 +426,12 @@ export function SessionPreparationScreen() {
     };
   }, [checkReadiness, fixture, me, profileName, status]);
 
-  const readiness = readinessCopy(phase);
-  const busy = phase === 'checking-identity' || phase === 'checking-readiness' || phase === 'starting-session';
+  const readiness = readinessCopy(phase, awaitingQuestion);
+  const busy =
+    phase === 'checking-identity' ||
+    phase === 'checking-readiness' ||
+    phase === 'starting-session' ||
+    awaitingQuestion;
   const disabled = busy || phase === 'access-denied' || phase === 'active-session';
   const displayName = firstNameOf(learner?.displayName || profileName || 'Math Explorer');
   // Only an APPROVED membership is shown; a PENDING/REJECTED one is not a classroom the learner
@@ -307,7 +439,7 @@ export function SessionPreparationScreen() {
   const classroom = me?.classroomMembership?.state === 'APPROVED' ? me.classroomMembership : null;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={styles.safeArea}>
       <View style={styles.mobileCanvas}>
         <View style={[styles.header, compact && styles.headerCompact]}>
           <Image
@@ -408,8 +540,11 @@ export function SessionPreparationScreen() {
               disabled && styles.startButtonDisabled,
               pressed && styles.startButtonPressed,
             ]}>
-            {phase === 'starting-session' ? (
-              <ActivityIndicator color={colors.primaryForeground} size="small" />
+            {phase === 'starting-session' || awaitingQuestion ? (
+              <>
+                <ActivityIndicator color={colors.primaryForeground} size="small" />
+                <AppText style={styles.startButtonText}>Getting ready…</AppText>
+              </>
             ) : (
               <AppText style={styles.startButtonText}>
                 {resumableSessionId ? 'Resume Adventure' : 'Start Adventure'}
@@ -419,9 +554,8 @@ export function SessionPreparationScreen() {
           </Pressable>
         </View>
 
-        <LearnerTabBar activeHomePressEnabled activeTab="home" playEnabled />
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 

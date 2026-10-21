@@ -110,9 +110,10 @@ const store: typeof import('@/src/features/session/session-command-store') = req
 test('exiting a finished session clears the stored active session id', async () => {
   // Left behind, it would let a later launch offer "Resume" and then try to resume a session the
   // server has already completed.
-  await store.saveActiveSessionId('finished-session-1');
-  assert.equal(await store.loadActiveSessionId(), 'finished-session-1');
+  const subject = 'subject-results-0000-1111-2222-333333333333';
+  await store.saveActiveSessionId(subject, 'finished-session-1');
+  assert.equal(await store.loadActiveSessionId(subject), 'finished-session-1');
 
-  await store.clearActiveSessionId();
-  assert.equal(await store.loadActiveSessionId(), null);
+  await store.clearActiveSessionId(subject);
+  assert.equal(await store.loadActiveSessionId(subject), null);
 });

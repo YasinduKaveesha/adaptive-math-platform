@@ -47,7 +47,9 @@ import { FailClosedFrame } from '@/src/features/c-session/fail-closed-frame';
 import { accentForGameFamily } from '@/src/features/c-session/game-family-accents';
 import { HIT_SLOP, TOKEN_SPACING, TOKEN_TOUCH_TARGET_SIZE } from '@/src/features/c-session/motor-constants';
 import { UnitStepper } from '@/src/features/c-session/primitives/unit-stepper';
+import { TaskPromptCard } from '@/src/features/c-session/task-prompt-card';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { TASK_SURFACE_PADDING } from '@/src/features/c-session/task-layout';
 
 const PAYLOAD_LABEL_LINE_HEIGHT = Math.round(typography.lineHeight.sm);
 const PAYLOAD_LABEL_BLOCK_HEIGHT = PAYLOAD_LABEL_LINE_HEIGHT * 2;
@@ -89,12 +91,13 @@ function LinePositionScene({ accent, onSubmit, spec }: LinePositionSceneProps) {
 
   return (
     <View style={styles.container}>
-      <AppText style={styles.promptText} variant="title">
-        {spec.promptText}
-      </AppText>
-
-      {spec.payloadValues.length > 0 && (
-        <View style={styles.payloadRow}>
+      {/* Question and items in one card; the controls below stay on the ground. */}
+      <TaskPromptCard>
+        <AppText style={styles.promptText} variant="title">
+          {spec.promptText}
+        </AppText>
+        {spec.payloadValues.length > 0 && (
+          <View style={styles.payloadRow}>
           {spec.payloadValues.map((payloadValue, index) => (
             <View key={`${payloadValue.key}-${index}`} style={styles.payloadColumn}>
               <View style={styles.payloadLabelBlock}>
@@ -103,10 +106,11 @@ function LinePositionScene({ accent, onSubmit, spec }: LinePositionSceneProps) {
               <View style={styles.payloadToken}>
                 <AppText style={styles.payloadTokenText}>{payloadValue.value}</AppText>
               </View>
-            </View>
-          ))}
-        </View>
-      )}
+              </View>
+            ))}
+          </View>
+        )}
+      </TaskPromptCard>
 
       {/* THE DISCOVERABILITY HINT (2026-08-26, owner decision): a bucketed range, never the exact
           target -- see line-position-logic.ts's own "THE DISCOVERABILITY HINT" comment for why a
@@ -157,7 +161,7 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: spacing.lg,
     justifyContent: 'space-between',
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   targetHint: {
     fontFamily: typography.fonts.bold,

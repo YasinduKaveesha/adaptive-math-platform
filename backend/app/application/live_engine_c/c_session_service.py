@@ -38,6 +38,7 @@ from app.application.live_engine_c.bundle_resolution import (
     resolve_safety_config,
     resolve_selection_config,
 )
+from app.application.live_engine_c.q_policy import load_q_policy
 from app.application.live_engine_c.mastery_fixture import (
     fixture_b_mastery_payload_for_phase_4,
     fixture_b_provenance_for_phase_4,
@@ -55,7 +56,6 @@ from app.domain.live_engine_c.types import AttendanceStatus, Grade, SessionMode
 from app.infrastructure.live_engine_c.adapter import LiveEngineCAdapter
 from app.infrastructure.persistence_models import CSessionRecord
 from app.infrastructure.repositories import (
-    AppUserLearnerLinkRepository,
     AppUserRepository,
     CRuntimeBundleRecordRepository,
 )
@@ -109,10 +109,18 @@ def _fields(record: CSessionRecord) -> CSessionFields:
 
 
 async def _require_learner_id(session: AsyncSession, principal_user_id: str) -> UUID:
-    user = await AppUserRepository(session).find_by_subject(principal_user_id)
-    if user is None:
+    """The learner behind a principal, in one round trip.
+
+    DELIBERATELY NO `profile_type` CHECK, unlike Component B's equivalents. This function never had
+    one: it rejects an unknown subject and a subject with no learner link, and nothing else. The
+    join below changes the number of round trips and nothing about that -- adding the
+    LEARNER/ForbiddenError branch here would be an authorization change wearing a performance
+    change's clothes, which is not what this edit is.
+    """
+    found = await AppUserRepository(session).find_with_learner_link_by_subject(principal_user_id)
+    if found is None:
         raise ResourceNotFoundError()
-    link = await AppUserLearnerLinkRepository(session).find_by_user(user.user_id)
+    _user, link = found
     if link is None:
         raise ResourceNotFoundError()
     return link.learner_id
@@ -148,6 +156,9 @@ class CSessionService:
             # returned object is not itself threaded into create_session below -- only its
             # per-field field_statuses map is (X4's own gate re-checks them structurally).
             evidence_window_config = resolve_evidence_window_config(bundle)
+            # LIVE-01: the frozen Q table is loaded and hash-verified HERE, before any session row exists, so a
+            # missing or tampered artifact refuses the session up front (fail closed, no rule fallback).
+            q_policy = load_q_policy(session_mode)
         except LiveEngineCError as exc:
             raise ConflictError() from exc
 
@@ -197,6 +208,7 @@ class CSessionService:
                 policy_parameter_source_status=_APPROVED_CODE_GATED_PARAMETER_SOURCE_STATUS,
                 scaffold_parameter_source_status=_APPROVED_CODE_GATED_PARAMETER_SOURCE_STATUS,
                 aggregation_parameter_source_status=_APPROVED_CODE_GATED_PARAMETER_SOURCE_STATUS,
+                q_policy_parameter_source_status=q_policy.parameter_source_status,
                 smoke_mode=_SMOKE_MODE,
                 request_id=request_id,
                 mastery_by_skill=mastery_by_skill,

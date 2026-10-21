@@ -162,7 +162,10 @@ async def _second_task_instance(
 
 
 def test_correct_answer_persists_the_real_safety_forces_recovery_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_method = LiveEngineCAdapter.decide_adaptation_with_safety_flags
+    # LIVE-01: production now decides with the frozen Q policy, so the adapter call that produces the flag
+    # on the live path is decide_with_proposed_action (the rule-path method is still exercised directly by
+    # the other tests in this file and by test_adaptation_safety_flags_reconstruction.py).
+    real_method = LiveEngineCAdapter.decide_with_proposed_action
     captured: dict = {}
 
     def spy_method(self, **kwargs):
@@ -170,7 +173,7 @@ def test_correct_answer_persists_the_real_safety_forces_recovery_flag(monkeypatc
         captured["result"] = result
         return result
 
-    monkeypatch.setattr(LiveEngineCAdapter, "decide_adaptation_with_safety_flags", spy_method)
+    monkeypatch.setattr(LiveEngineCAdapter, "decide_with_proposed_action", spy_method)
 
     alembic("upgrade", "head")
 
@@ -194,7 +197,7 @@ def test_correct_answer_persists_the_real_safety_forces_recovery_flag(monkeypatc
                 "correct -- this test's premise no longer holds"
             )
 
-            assert "result" in captured, "decide_adaptation_with_safety_flags was never called"
+            assert "result" in captured, "decide_with_proposed_action was never called"
             rows = await CPolicyDecisionRecordRepository(session).list_chronological_for_session(c_session_id)
             assert len(rows) == 1
             # The persisted column equals EXACTLY what the adapter's own reconstruction computed

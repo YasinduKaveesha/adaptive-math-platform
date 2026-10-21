@@ -37,6 +37,8 @@ COPY --chown=10001:10001 provenance/c-runtime-bundle.schema.json ./provenance/c-
 COPY --chown=10001:10001 provenance/R26-IT-138_Component_C_Game_Task_Catalogue_v1.0.md ./provenance/R26-IT-138_Component_C_Game_Task_Catalogue_v1.0.md
 # CONNECT Step 3 — the approved C runtime bundle manifest; see .dockerignore.
 COPY --chown=10001:10001 provenance/c-runtime-bundle-approved-1.0.json ./provenance/c-runtime-bundle-approved-1.0.json
+# LIVE-01 -- the frozen Q-learning policy tables + MANIFEST (sha256-verified by q_policy.py at session start); see .dockerignore.
+COPY --chown=10001:10001 provenance/c_policy ./provenance/c_policy
 USER 10001:10001
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

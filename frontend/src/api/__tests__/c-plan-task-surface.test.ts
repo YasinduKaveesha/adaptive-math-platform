@@ -6,6 +6,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import type { ComponentType } from 'react';
 
 import type { CNextTaskResponse } from '@/src/api/generated/openapi-types';
@@ -114,5 +117,33 @@ test('the two fail-closed reasons are distinguishable from each other, not merel
   assert.equal(noSurface.kind, 'fail-closed');
   if (unresolvable.kind === 'fail-closed' && noSurface.kind === 'fail-closed') {
     assert.notEqual(unresolvable.reason, noSurface.reason);
+  }
+});
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+// --- the invisible spacer that ate SUBMIT ----------------------------------------------------
+//
+// 2026-09-28, found by driving the real app in a browser. The task panel's two layout spacers are
+// empty Views with a percentage height. They are also real, hit-testable elements, and the bottom
+// one is the LAST sibling -- so it paints over whatever the middle area overflows. Once a surface
+// grew taller than that area (the question card did it), the bottom spacer landed exactly on top
+// of SUBMIT: the button was enabled, visible, `pointerEvents: auto`, and completely untappable,
+// with nothing logged anywhere because the whole submit path is silent on failure by construction.
+//
+// A spacer must never receive a touch. This is a source scan rather than a render test because the
+// failure is a LAYOUT overlap that only exists at real viewport sizes -- the render harness would
+// not reproduce it, and did not.
+
+test('the task panel spacers cannot receive touches', () => {
+  const source = readFileSync(
+    resolve(here, '..', '..', 'features', 'c-session', 'c-session-screen.tsx'),
+    'utf-8',
+  );
+  for (const spacer of ['taskContentSpacerTop', 'taskContentSpacerBottom']) {
+    // Plain substring, not a regex: the exact JSX is short and stable, and a regex here was its
+    // own small bug the first time round.
+    const expected = `<View pointerEvents="none" style={styles.${spacer}} />`;
+    assert.ok(source.includes(expected), `${spacer} must be rendered as: ${expected}`);
   }
 });

@@ -272,6 +272,35 @@ class AdaptationPort(Protocol):
         type."""
         ...
 
+    def safety_controller_version(self) -> str: ...
+
+    def preview_allowed_actions(
+        self,
+        *,
+        evidence: PolicyObservableEvidence,
+        current_difficulty_level: int,
+        safety_config: SafetyConfig,
+        selection_config: SelectionConfig,
+    ) -> tuple[str, ...]:
+        """LIVE-01: the actions the pinned safety layer would not override (the Q policy's ``allowed`` set)."""
+        ...
+
+    def decide_with_proposed_action(
+        self,
+        *,
+        selected_action: str,
+        policy_mode: PolicyMode,
+        policy_version: str,
+        rl_state: Optional[Mapping[str, object]],
+        evidence: PolicyObservableEvidence,
+        current_difficulty_level: int,
+        seed_lineage: SeedLineage,
+        safety_config: SafetyConfig,
+        selection_config: SelectionConfig,
+    ) -> AdaptationDecisionWithSafetyFlags:
+        """LIVE-01: apply the pinned safety layer to an externally proposed action and compose the decision."""
+        ...
+
 
 class ScaffoldPort(Protocol):
     """The C0-C4 scaffold ladder decision (v3.0 §7, Phase 7)."""

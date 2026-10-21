@@ -63,6 +63,17 @@ EXPECTED_TABLES = {
     # (shared infrastructure, not shared ownership — owner condition 1), created by their own
     # migration (20260816_0008).
     "outbox_events", "contract_deliveries",
+    # Component D (Component D authorization, owner decision D-011 A1, 2026-10-21) — the three
+    # cognitive-profiling tables, created by their own migration (20261021_0010).
+    #
+    # NOTE FOR WHOEVER ADDS THE NEXT TABLE: this set is a SECOND COPY of the one in
+    # test_be2_architecture_guards.py. The two are maintained by hand and drift silently —
+    # adding a table to the guard file alone leaves THIS test red, with an error that says
+    # nothing about which list is stale. That is the "second record of a property, capable of
+    # drifting from the first" defect 9c1b-work-order-v2.md names. Not consolidated here because
+    # doing so would rewrite a Component B test for a Component D change, which the integration
+    # rules forbid; recorded instead so the next person pays five minutes rather than an hour.
+    "d_learner_state", "d_interactions", "d_cognitive_profiles",
 }
 COMMON_COLUMNS = {
     "created_at_utc", "updated_at_utc", "actor_user_id", "system_actor", "request_id",

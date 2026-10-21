@@ -23,21 +23,44 @@ const EMPTY_STATE: AdventureChargeState = { level: 0, awardedSessionIds: [] };
 // need to prevent a DOUBLE-award for a session still in view, never a lifetime ledger.
 const MAX_REMEMBERED_SESSION_IDS = 50;
 
+/**
+ * SecureStore accepts only alphanumerics, ".", "-" and "_" in a key, and THROWS on anything else --
+ * so the ":" this used everywhere made every native read reject, which surfaced as an uncaught
+ * promise that took Home down before it could render. localStorage has no such rule, so the bug
+ * was invisible on web and fatal on device.
+ *
+ * Web therefore keeps the historical ":" key, leaving existing browser gauges where they are.
+ * Native uses "_", and orphans nothing: the colon threw before a single native value was ever
+ * written, so there is no native data under the old spelling to migrate.
+ */
 function storageKey(subject: string): string {
-  return `adventure-charge:${subject}`;
+  return `adventure-charge${Platform.OS === 'web' ? ':' : '_'}${subject}`;
 }
 
+/**
+ * Storage failures are swallowed on purpose. This gauge is a local-only motivational nudge with no
+ * backend field behind it (see the note above), so a device that refuses to read or write it should
+ * cost the child their charge, never their app: it reads as empty and an award is dropped.
+ */
 async function readRaw(subject: string): Promise<string | null> {
-  if (Platform.OS === 'web') return window.localStorage.getItem(storageKey(subject));
-  return SecureStore.getItemAsync(storageKey(subject));
+  try {
+    if (Platform.OS === 'web') return window.localStorage.getItem(storageKey(subject));
+    return await SecureStore.getItemAsync(storageKey(subject));
+  } catch {
+    return null;
+  }
 }
 
 async function writeRaw(subject: string, value: string): Promise<void> {
-  if (Platform.OS === 'web') {
-    window.localStorage.setItem(storageKey(subject), value);
-    return;
+  try {
+    if (Platform.OS === 'web') {
+      window.localStorage.setItem(storageKey(subject), value);
+      return;
+    }
+    await SecureStore.setItemAsync(storageKey(subject), value);
+  } catch {
+    /* see readRaw: a failed write loses one charge level, it does not break the session. */
   }
-  await SecureStore.setItemAsync(storageKey(subject), value);
 }
 
 function parseState(raw: string | null): AdventureChargeState {

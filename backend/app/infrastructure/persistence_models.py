@@ -257,8 +257,10 @@ class Classroom(ProvenanceMixin, Base):
     __table_args__ = (
         CheckConstraint("grade IN ('GRADE_2', 'GRADE_3')", name="ck_classrooms_grade"),
         CheckConstraint("name IS NULL OR btrim(name) <> ''", name="ck_classrooms_name_nonblank"),
-        Index("uq_classrooms_teacher_normalized_name", "teacher_profile_id", func.lower(func.btrim(text("name"))), unique=True, postgresql_where=text("name IS NOT NULL")),
+        # A deleted classroom no longer holds its name (migration 20260914_0009).
+        Index("uq_classrooms_teacher_normalized_name", "teacher_profile_id", func.lower(func.btrim(text("name"))), unique=True, postgresql_where=text("name IS NOT NULL AND deleted_at_utc IS NULL")),
         CheckConstraint("row_version >= 0", name="ck_classrooms_row_version"),
+        CheckConstraint("(deleted_at_utc IS NULL) = (deleted_by_user_id IS NULL)", name="ck_classrooms_deletion_pair"),
         *ProvenanceMixin.provenance_constraints("classrooms"),
     )
 
@@ -267,6 +269,15 @@ class Classroom(ProvenanceMixin, Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     grade: Mapped[str] = mapped_column(String(16), nullable=False)
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # Soft delete (20260914_0009): set once by the owning teacher, never cleared. Every
+    # teacher-facing read filters it out; the row stays because memberships, invites and
+    # Component 3's tables all reference it with ON DELETE RESTRICT.
+    deleted_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("app_users.user_id", ondelete="RESTRICT", name="fk_classrooms_deleted_by_user_id_app_users"),
+        nullable=True,
+    )
 
 
 class ClassroomInvite(ProvenanceMixin, Base):
@@ -291,8 +302,9 @@ class ClassroomMembership(ProvenanceMixin, Base):
     __tablename__ = "classroom_memberships"
     __table_args__ = (
         UniqueConstraint("classroom_id", "learner_id", name="uq_classroom_memberships_pair"),
-        CheckConstraint("state IN ('PENDING', 'APPROVED', 'REJECTED')", name="ck_classroom_memberships_state"),
-        CheckConstraint("(state = 'PENDING' AND decided_at_utc IS NULL AND decided_by_user_id IS NULL) OR (state IN ('APPROVED', 'REJECTED') AND decided_at_utc IS NOT NULL AND decided_by_user_id IS NOT NULL)", name="ck_classroom_memberships_decision"),
+        # REMOVED (20260914_0009): the membership ended because its classroom was deleted.
+        CheckConstraint("state IN ('PENDING', 'APPROVED', 'REJECTED', 'REMOVED')", name="ck_classroom_memberships_state"),
+        CheckConstraint("(state = 'PENDING' AND decided_at_utc IS NULL AND decided_by_user_id IS NULL) OR (state IN ('APPROVED', 'REJECTED', 'REMOVED') AND decided_at_utc IS NOT NULL AND decided_by_user_id IS NOT NULL)", name="ck_classroom_memberships_decision"),
         CheckConstraint("row_version >= 0", name="ck_classroom_memberships_row_version"),
         Index(
             "uq_classroom_memberships_one_approved_per_learner",
@@ -1472,6 +1484,184 @@ class ContractDeliveryRecord(ProvenanceMixin, Base):
     )
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     delivery_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class DLearnerStateRecord(ProvenanceMixin, Base):
+    """Component D (Component D authorization, D-011 A1). One row per learner: whether they have
+    seen the compD intro, and the language they chose.
+
+    ``intro_completed_at`` is a TIMESTAMP, not a boolean, and the public DTO derives
+    ``intro_completed`` from ``IS NOT NULL``. Storing the moment rather than the fact costs one
+    column and answers "when", which a boolean throws away for good; the API shape is unchanged.
+
+    A learner with NO ROW is a supported state, not an error: the contract reads it as
+    ``{intro_completed: false, language: "en"}`` and creates nothing. The row appears on the first
+    POST. That is why ``language`` is NOT NULL here while still having a default at the API layer
+    -- the default belongs to the read, not to the table, so the table never holds a language the
+    learner did not pick.
+    """
+
+    __tablename__ = "d_learner_state"
+    __table_args__ = (
+        CheckConstraint("language IN ('en', 'si')", name="ck_d_learner_state_language"),
+        *ProvenanceMixin.provenance_constraints("d_learner_state"),
+    )
+
+    learner_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("b_learners.learner_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    intro_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    language: Mapped[str] = mapped_column(String(2), nullable=False)
+
+
+class DInteractionRecord(ProvenanceMixin, Base):
+    """Component D (Component D authorization, D-011 A1). One row per question answered in a
+    profiling run -- the raw evidence the feature vector is computed from.
+
+    NAMES. ``response_matched`` and ``assist_used`` are the HOST'S OWN names for these two
+    concepts (``b_attempts.response_matched``; ``b_hint_events.assist_event_id`` /
+    ``assist_level``), adopted under D-011 A4. compD called them ``is_correct`` and ``hint_used``,
+    which collide with ``PROHIBITED_COLUMN_TERMS``' "correct" and "hint". They are NOT in
+    ``AUTHORIZED_D_COLUMN_EXCEPTIONS`` -- that set does not exist, deliberately: the authorization
+    found the host already had names for both, so no exemption was asked for or granted. Do not
+    "restore" the compD spellings; they would fail
+    ``test_exact_authorized_model_table_set_and_no_scientific_columns`` with nothing to exempt them.
+
+    ``response_time_sec``, ``session_time_sec`` and ``time_between_actions`` are clean as they
+    stand: the prohibited term is "latency", not "time" (contrast ``b_attempts.client_elapsed_ms``,
+    which took the same route, and ``c_task_opportunity_summaries.task_latency_sec``, which needed
+    an exemption).
+
+    ``session_id`` needs no exemption either: "session" is a prohibited PATH term, not a column
+    term -- ``b_sessions``, ``c_sessions`` and ``b_attempts`` all carry one already.
+
+    The unique ``(session_id, question_id)`` is what makes the profile POST idempotent at the
+    database level: a retry of the identical body (N-FE-003) cannot double-insert, and the
+    ``IntegrityError`` backstop turns a genuine race into a 409 rather than two rows.
+    """
+
+    __tablename__ = "d_interactions"
+    __table_args__ = (
+        UniqueConstraint("session_id", "question_id", name="uq_d_interactions_session_question"),
+        CheckConstraint(
+            "topic IN ('Counting', 'Addition', 'Subtraction', 'Division')",
+            name="ck_d_interactions_topic",
+        ),
+        CheckConstraint("difficulty IN ('Easy', 'Medium', 'Hard')", name="ck_d_interactions_difficulty"),
+        CheckConstraint(
+            "error_type IN ('none', 'calculation', 'conceptual', 'careless', 'unknown')",
+            name="ck_d_interactions_error_type",
+        ),
+        CheckConstraint("response_time_sec >= 0", name="ck_d_interactions_response_time_sec_nonnegative"),
+        CheckConstraint("session_time_sec >= 0", name="ck_d_interactions_session_time_sec_nonnegative"),
+        CheckConstraint(
+            "time_between_actions >= 0", name="ck_d_interactions_time_between_actions_nonnegative"
+        ),
+        CheckConstraint("click_count >= 0", name="ck_d_interactions_click_count_nonnegative"),
+        CheckConstraint("attempts >= 1", name="ck_d_interactions_attempts_at_least_one"),
+        CheckConstraint("question_id <> ''", name="ck_d_interactions_question_id_nonblank"),
+        *ProvenanceMixin.provenance_constraints("d_interactions"),
+    )
+
+    d_interaction_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    learner_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("b_learners.learner_id", ondelete="RESTRICT"), nullable=False
+    )
+    session_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    question_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    topic: Mapped[str] = mapped_column(String(16), nullable=False)
+    difficulty: Mapped[str] = mapped_column(String(8), nullable=False)
+    response_time_sec: Mapped[float] = mapped_column(Float, nullable=False)
+    attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    # D-011 A4: the host's own name (b_attempts.response_matched), NOT compD's `is_correct`.
+    response_matched: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # D-011 A4: the host's own `assist_*` naming (b_hint_events), NOT compD's `hint_used`.
+    assist_used: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    click_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    session_time_sec: Mapped[float] = mapped_column(Float, nullable=False)
+    time_between_actions: Mapped[float] = mapped_column(Float, nullable=False)
+    error_type: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class DCognitiveProfileRecord(ProvenanceMixin, Base):
+    """Component D (Component D authorization, D-011 A1). One profile per profiling run.
+
+    WHAT IS STORED, AND WHAT DELIBERATELY IS NOT. The four levels, the confidence score, the
+    feature vector and the model version are stored. The RECOMMENDATION TEXT IS NOT: it is built
+    when the profile is read, in the language the read asked for (contract v4). Persisting it
+    would freeze the wording of the day it was generated, so a learner who switches to Sinhala
+    would see their History in English forever -- the defect plan v5 recorded and this column list
+    is the fix for.
+
+    ``session_id`` is UNIQUE GLOBALLY, not per learner. A profile is fetched by that id alone, so
+    a non-unique id would make ``GET /d/sessions/{session_id}/profile`` ambiguous; and because the
+    uniqueness is global, a session id belonging to ANOTHER learner is found and then refused as a
+    404 rather than silently missing -- which is what lets the route avoid confirming that someone
+    else's session exists.
+
+    ``features`` is JSONB rather than eight columns. The keys are a vector the rule-based profile
+    consumes as a unit and the API returns as a unit; splitting them would add eight columns that
+    are never queried individually, and would make the inevitable ninth feature a migration. Note
+    the guard consequence, which is why this is recorded rather than assumed: the column guard
+    reads COLUMN NAMES, so keys inside this JSONB (``mean_clicks_per_question``, ``hint_rate``)
+    are not column names and are not scanned. That is not a loophole being used -- both of those
+    names are clean anyway under D-011 A4 -- but a later key that carried a prohibited term would
+    pass the DB guard while still being caught at the public layer by
+    ``test_no_private_or_scientific_field_name_in_frozen_schema``.
+    """
+
+    __tablename__ = "d_cognitive_profiles"
+    __table_args__ = (
+        UniqueConstraint("session_id", name="uq_d_cognitive_profiles_session"),
+        CheckConstraint(
+            "memory_level IN ('low', 'medium', 'high')", name="ck_d_cognitive_profiles_memory_level"
+        ),
+        CheckConstraint(
+            "attention_level IN ('low', 'medium', 'high')", name="ck_d_cognitive_profiles_attention_level"
+        ),
+        CheckConstraint(
+            "number_sense_level IN ('low', 'medium', 'high')",
+            name="ck_d_cognitive_profiles_number_sense_level",
+        ),
+        CheckConstraint(
+            "processing_speed_level IN ('Slow', 'Moderate', 'Fast')",
+            name="ck_d_cognitive_profiles_processing_speed_level",
+        ),
+        CheckConstraint(
+            "confidence_score >= 0 AND confidence_score <= 1",
+            name="ck_d_cognitive_profiles_confidence_score_unit_interval",
+        ),
+        CheckConstraint("model_version <> ''", name="ck_d_cognitive_profiles_model_version_nonblank"),
+        Index(
+            "ix_d_cognitive_profiles_learner_generated_at",
+            "learner_id",
+            text("generated_at DESC"),
+        ),
+        *ProvenanceMixin.provenance_constraints("d_cognitive_profiles"),
+    )
+
+    d_cognitive_profile_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    # The four level columns are String(16) although the longest permitted value ("Moderate") is
+    # 8. The CHECK is the real domain; the length is only a backstop, and a tight one MASKS the
+    # CHECK -- a 9-character bad value is refused as "value too long" before the constraint is
+    # reached, which is a confusing error and, worse, made this file's own test pass for the wrong
+    # reason until it was caught. Slack here costs nothing in Postgres.
+    learner_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("b_learners.learner_id", ondelete="RESTRICT"), nullable=False
+    )
+    session_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    memory_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    attention_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    number_sense_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    processing_speed_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 AUTHORIZED_TABLES = frozenset(Base.metadata.tables)

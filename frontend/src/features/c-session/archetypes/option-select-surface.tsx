@@ -34,7 +34,9 @@ import { HIT_SLOP, TOKEN_SPACING, TOKEN_TOUCH_TARGET_SIZE } from '@/src/features
 import { BooleanToggle } from '@/src/features/c-session/primitives/boolean-toggle';
 import { ObjectQuantityDisplay } from '@/src/features/c-session/primitives/object-quantity-display';
 import { OptionChoiceRow } from '@/src/features/c-session/primitives/option-choice-row';
+import { TaskPromptCard } from '@/src/features/c-session/task-prompt-card';
 import { colors, radius, spacing, typography } from '@/src/theme/tokens';
+import { TASK_SURFACE_PADDING } from '@/src/features/c-session/task-layout';
 
 // Matches value-report-surface.tsx's own payload-token sizing exactly (2026-08-26 user request:
 // token 60% larger, label 50% larger than the shared TOKEN_* constants) -- reused for visual
@@ -88,10 +90,15 @@ function NumeralOptionsScene({ onSubmit, spec }: NumeralOptionsSceneProps) {
 
   return (
     <View style={styles.container}>
-      <AppText style={styles.promptText} variant="title">
-        {spec.promptText}
-      </AppText>
-      <ObjectQuantityDisplay count={spec.quantity} />
+      {/* The question and the objects it asks about, together in one card. The option row and
+          SUBMIT below stay on the warm ground -- the card holds what the child LOOKS AT, not what
+          they act on. See task-prompt-card.tsx. */}
+      <TaskPromptCard>
+        <AppText style={styles.promptText} variant="title">
+          {spec.promptText}
+        </AppText>
+        <ObjectQuantityDisplay count={spec.quantity} />
+      </TaskPromptCard>
       <OptionChoiceRow onSelect={setSelected} options={spec.numeralOptions} value={selected} />
       {spec.extraFields.map((field) => (
         <BooleanToggle
@@ -132,23 +139,25 @@ function OptionSelectScene({ accent, onSubmit, spec }: OptionSelectSceneProps) {
 
   return (
     <View style={styles.container}>
-      <AppText style={styles.promptText} variant="title">
-        {spec.promptText}
-      </AppText>
-      {spec.payloadValues.length > 0 ? (
-        <View style={styles.payloadRow}>
-          {spec.payloadValues.map((payloadValue, index) => (
-            <View key={`${payloadValue.key}-${index}`} style={styles.payloadColumn}>
-              <View style={styles.payloadLabelBlock}>
-                <AppText style={[styles.payloadLabel, { color: accent }]}>{payloadValue.label}</AppText>
+      <TaskPromptCard>
+        <AppText style={styles.promptText} variant="title">
+          {spec.promptText}
+        </AppText>
+        {spec.payloadValues.length > 0 ? (
+          <View style={styles.payloadRow}>
+            {spec.payloadValues.map((payloadValue, index) => (
+              <View key={`${payloadValue.key}-${index}`} style={styles.payloadColumn}>
+                <View style={styles.payloadLabelBlock}>
+                  <AppText style={[styles.payloadLabel, { color: accent }]}>{payloadValue.label}</AppText>
+                </View>
+                <View style={styles.payloadToken}>
+                  <AppText style={styles.payloadTokenText}>{payloadValue.value}</AppText>
+                </View>
               </View>
-              <View style={styles.payloadToken}>
-                <AppText style={styles.payloadTokenText}>{payloadValue.value}</AppText>
-              </View>
-            </View>
-          ))}
-        </View>
-      ) : null}
+            ))}
+          </View>
+        ) : null}
+      </TaskPromptCard>
       <OptionChoiceRow onSelect={setSelected} options={spec.alternatives} value={selected} />
       {spec.extraFields.map((field) => (
         <BooleanToggle
@@ -186,7 +195,7 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: spacing.lg,
     justifyContent: 'space-between',
-    padding: spacing.lg,
+    padding: TASK_SURFACE_PADDING,
   },
   payloadColumn: {
     alignItems: 'center',

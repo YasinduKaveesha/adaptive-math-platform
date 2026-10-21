@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError
+from app.core.errors import ConflictError, ResourceNotFoundError
 from app.domain.b_opportunity import (
     PresentationTokenExpiredError,
     PresentationTokenMismatchError,
@@ -98,7 +98,16 @@ class OpportunityPersistenceService:
             item_template_id=item_template_id,
             opportunity_index=opportunity_index,
             state="OPEN",
-            presented_at_utc=now,
+            # NOT presented yet (2026-09-27 owner ruling). Selecting an item is server work -- and
+            # since the Play/prepare prefetch, it happens before the child is looking at anything.
+            # `presented_at_utc` is now what its name says: the moment the learner was actually
+            # shown the question, written once by `anchor_presentation` when the session screen
+            # acknowledges the render. Until then it is NULL.
+            presented_at_utc=None,
+            # A provisional deadline only: the column is NOT NULL and `ck_..._timeout_after_created`
+            # requires it to be after creation, so it cannot be left empty. `anchor_presentation`
+            # replaces it with the real one measured from the render. If an opportunity is somehow
+            # never acknowledged, this stays as the fail-safe bound rather than "no limit at all".
             timeout_deadline_utc=now + timeout,
             selection_provenance=dict(selection_provenance),
             row_version=0,
@@ -110,6 +119,54 @@ class OpportunityPersistenceService:
         except IntegrityError as exc:
             raise ConflictError() from exc
         return record
+
+    async def anchor_presentation(
+        self,
+        *,
+        item_opportunity_id: UUID,
+        learner_id: UUID,
+        timeout: timedelta,
+    ) -> tuple[ItemOpportunityRecord, bool]:
+        """Start the answering clock at the moment the learner was actually shown the question.
+
+        Returns ``(record, anchored)`` -- ``anchored`` is True only for the call that actually
+        started the clock, so a replay is distinguishable from a first acknowledgement rather than
+        two identical successes.
+
+        FIRST ACKNOWLEDGEMENT WINS, and every later one is a no-op that returns the same deadline.
+        That is what makes this safe to call from a screen that can remount: a relaunch, a retry or
+        a crash-recovery re-render must not buy the child a fresh five minutes, and equally must
+        not shorten what they already had.
+
+        Governance: `component-b-closure-decisions.json`'s timeout-policy entry rules that
+        "infrastructure failure is never learner failure". Anchoring at selection charged the child
+        for server and network time -- prefetch included -- which is exactly that. The numeric
+        threshold itself remains PROVISIONAL and unapproved; this changes only when the clock
+        starts, never how long it runs.
+        """
+        record = await self._session.scalar(
+            select(ItemOpportunityRecord)
+            .where(
+                ItemOpportunityRecord.item_opportunity_id == item_opportunity_id,
+                ItemOpportunityRecord.learner_id == learner_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if record is None:
+            raise ResourceNotFoundError()
+        # A CLOSED opportunity has been answered or timed out; re-anchoring it would move a
+        # deadline that has already done its job.
+        if record.state != "OPEN":
+            raise ConflictError()
+        if record.presented_at_utc is not None:
+            return record, False
+        now = datetime.now(UTC)
+        record.presented_at_utc = now
+        record.timeout_deadline_utc = now + timeout
+        record.row_version += 1
+        await self._session.flush()
+        return record, True
 
     async def close_opportunity(self, item_opportunity_id: UUID) -> ItemOpportunityRecord:
         record = await self._session.scalar(

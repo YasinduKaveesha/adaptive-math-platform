@@ -1,4 +1,5 @@
-"""Seven governance-authorized profile and classroom endpoints."""
+"""Eight governance-authorized profile and classroom endpoints (the eighth, classroom
+deletion, added 2026-09-14 for the Component 3 teacher dashboard)."""
 
 from typing import Annotated
 from uuid import UUID
@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, Request, status
 
 from app.application.profile_classroom import ProfileClassroomService
 from app.domain.principal import AuthenticatedPrincipal
-from app.domain.profile_classroom import ClassroomCreateRequest, ClassroomListResponse, ClassroomResponse, LearnerProfileResponse, ProfileCreateRequest, TeacherProfileResponse
+from app.domain.profile_classroom import ClassroomCreateRequest, ClassroomDeleteRequest, ClassroomDeleteResponse, ClassroomListResponse, ClassroomResponse, LearnerProfileResponse, ProfileCreateRequest, TeacherProfileResponse
 from app.infrastructure.auth import get_authenticated_principal
 
 
@@ -51,3 +52,8 @@ async def list_classrooms(request: Request, principal: Annotated[AuthenticatedPr
 @router.get("/classrooms/{classroom_id}", response_model=ClassroomResponse)
 async def get_classroom(classroom_id: UUID, request: Request, principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)], use_cases: Annotated[ProfileClassroomService, Depends(service)]) -> ClassroomResponse:
     return await use_cases.get_classroom(principal, classroom_id, request.state.request_id)
+
+
+@router.post("/classrooms/{classroom_id}/delete", response_model=ClassroomDeleteResponse)
+async def delete_classroom(classroom_id: UUID, payload: ClassroomDeleteRequest, request: Request, principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)], idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=255)], use_cases: Annotated[ProfileClassroomService, Depends(service)]) -> ClassroomDeleteResponse:
+    return await use_cases.delete_classroom(principal, classroom_id, payload, idempotency_key, request.state.request_id)

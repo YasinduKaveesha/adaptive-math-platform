@@ -477,7 +477,7 @@ export function LearnerHomeScreen() {
   return (
     <View style={styles.safeArea}>
       <View style={styles.mobileCanvas}>
-        <LearnerHeaderBar compact={compact} displayName={displayName} />
+        <LearnerHeaderBar compact={compact} displayName={displayName} showBattery />
 
         <Animated.ScrollView
           bounces

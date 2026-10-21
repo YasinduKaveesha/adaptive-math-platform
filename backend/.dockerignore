@@ -100,3 +100,6 @@ provenance/wheels/*
 # LIVE-01: the frozen Q-learning policy tables (hash-verified at session start against MANIFEST.json), read by
 # app/application/live_engine_c/q_policy.py. Plain JSON, no generator source, no wheel.
 !provenance/c_policy/
+# Component D trained model (owner, 2026-10-21): the owner's cognitive_model.pkl and its MANIFEST.json,
+# sha256-verified before unpickling by app/application/d_model_profile.py. No source, no dataset.
+!provenance/d_model/

@@ -58,6 +58,13 @@ def close_client(client: TestClient) -> None:
     app.dependency_overrides.clear()
 
 
+def rules_only(monkeypatch) -> None:
+    """Pin the RULE-BASED profile. The trained model is tried first (d_model_profile) and these
+    tests assert the rules' own outputs, which stay the fallback; the model has its own tests in
+    test_d4_model_profile.py."""
+    monkeypatch.setattr("app.application.d_cognitive_profiling.predict_levels", lambda events: None)
+
+
 def headers(subject: str | None = None, idempotency_key: str | None = None) -> dict[str, str]:
     """Component D's own six routes take NO ``Idempotency-Key`` -- the ``session_id`` in the path
     is the natural key, the way Component C decided it. The parameter exists only for the host's
@@ -244,7 +251,8 @@ def test_a_profile_is_stored_and_read_back_with_every_contract_field() -> None:
         assert profile["number_sense_level"] in {"low", "medium", "high"}
         assert profile["processing_speed_level"] in {"Slow", "Moderate", "Fast"}
         assert 0.0 <= profile["confidence_score"] <= 1.0
-        assert profile["model_version"] == "rule-based-v2"
+        # The owner's trained model is what produces profiles now (d_model_profile).
+        assert profile["model_version"] == "mathsmate-rf-from-scratch-v1"
         assert profile["recommendation"]
         assert set(profile["features"]) == {
             "accuracy", "avg_response_time_ms", "response_time_std_ms", "avg_attempts",
@@ -514,9 +522,10 @@ def test_the_recommendation_is_built_in_the_language_the_read_asks_for() -> None
         close_client(client)
 
 
-def test_a_struggling_run_and_a_strong_run_do_not_produce_the_same_profile() -> None:
+def test_a_struggling_run_and_a_strong_run_do_not_produce_the_same_profile(monkeypatch) -> None:
     """A positive control. Every assertion above would still pass if the heuristic returned a
     constant, so this one proves the levels actually respond to the evidence."""
+    rules_only(monkeypatch)
     upgrade()
     subject = f"d-learner-{uuid4()}"
     setup_learner(subject)
@@ -566,7 +575,7 @@ def events_with_times(times: tuple[float, ...]) -> dict:
     }
 
 
-def test_one_long_pause_does_not_relabel_a_whole_run_as_slow() -> None:
+def test_one_long_pause_does_not_relabel_a_whole_run_as_slow(monkeypatch) -> None:
     """REGRESSION, from live data. compD capped the MEAN response time at 10s; the cap belongs on
     each RESPONSE. With the old arithmetic the first run below scored 0.018 and stored `Slow`,
     because one 66.8-second pause dragged a mean of nine 2-7 second answers to 9.82s.
@@ -574,6 +583,7 @@ def test_one_long_pause_does_not_relabel_a_whole_run_as_slow() -> None:
     Both assertions matter and the second is the one that constrains the fix: a median would also
     rescue the outlier run, but it would move the clean run from Moderate to Fast -- relabelling a
     run that was never wrong. Capping each response leaves the clean run's value bit-identical."""
+    rules_only(monkeypatch)
     upgrade()
     subject = f"d-learner-{uuid4()}"
     setup_learner(subject)
@@ -612,12 +622,13 @@ def test_one_long_pause_does_not_relabel_a_whole_run_as_slow() -> None:
         close_client(client)
 
 
-def test_a_genuinely_slow_run_still_reads_slow() -> None:
+def test_a_genuinely_slow_run_still_reads_slow(monkeypatch) -> None:
     """The counterpart to the test above, and the reason the fix is not simply "ignore slow
     answers": a child who is slow on EVERY question must still read Slow. Capping each response
     at 10s means ten answers of 30 seconds all become 10s, the mean is 10s, the score is 0.0, and
     the label is Slow -- the cap removes the influence of how far past 10s a response went, not the
     fact that it was past it."""
+    rules_only(monkeypatch)
     upgrade()
     subject = f"d-learner-{uuid4()}"
     setup_learner(subject)

@@ -59,18 +59,24 @@ function AdventureBattery({ compact, level, maxLevel }: { compact: boolean; leve
 export function LearnerHeaderBar({
   compact = false,
   displayName,
+  showBattery = false,
 }: {
   compact?: boolean;
   displayName: string;
+  /** The adventure-charge battery belongs to Home only (owner request, 2026-10-21); the game hub,
+   * the profile and compD show the greeting alone. The header keeps its height either way. */
+  showBattery?: boolean;
 }) {
   const { level, maxLevel } = useAdventureCharge();
 
   return (
     <View style={[styles.headerGreetingSection, compact && styles.sectionCompact]}>
       <View style={styles.header}>
-        <View style={styles.brand}>
-          <AdventureBattery compact={compact} level={level} maxLevel={maxLevel} />
-        </View>
+        {showBattery ? (
+          <View style={styles.brand}>
+            <AdventureBattery compact={compact} level={level} maxLevel={maxLevel} />
+          </View>
+        ) : null}
 
         {/* The "Play Adventure" pill used to sit here, centred between the battery and the
             greeting. It now renders above the tab bar (learner-tab-bar.tsx), next to the Play

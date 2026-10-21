@@ -37,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.application.d_features import capped_mean_response_time_ms, compute_features
 from app.application.d_learner_access import provenance, require_learner
+from app.application.d_model_profile import predict_levels
 from app.application.d_recommendation import build_recommendation
 from app.application.d_rule_profile import (
     MODEL_VERSION,
@@ -188,18 +189,35 @@ class DCognitiveProfilingService:
             features = compute_features(events)
             generated_at = datetime.now(UTC)
             profile_id = uuid4()
+            # The owner's trained model first (d_model_profile); the rule-based profile whenever it
+            # cannot be used, as compD's predict_profile did. `model_version` records which one.
+            levels = predict_levels(events)
+            if levels is not None:
+                memory, attention, number_sense = (
+                    levels.memory_level,
+                    levels.attention_level,
+                    levels.number_sense_level,
+                )
+                speed, version = levels.processing_speed_level, levels.model_version
+            else:
+                memory = memory_level(features)
+                attention = attention_level(features)
+                number_sense = number_sense_level(features)
+                # Takes the per-response-capped mean, NOT features.avg_response_time_ms, which is
+                # published uncapped on purpose. See d_features.capped_mean_response_time_ms.
+                speed = processing_speed_level(capped_mean_response_time_ms(events))
+                version = MODEL_VERSION
             record = DCognitiveProfileRecord(
                 d_cognitive_profile_id=profile_id,
                 learner_id=learner_id,
                 session_id=session_id,
-                memory_level=memory_level(features),
-                attention_level=attention_level(features),
-                number_sense_level=number_sense_level(features),
-                # Takes the per-response-capped mean, NOT features.avg_response_time_ms, which is
-                # published uncapped on purpose. See d_features.capped_mean_response_time_ms.
-                processing_speed_level=processing_speed_level(capped_mean_response_time_ms(events)),
+                memory_level=memory,
+                attention_level=attention,
+                number_sense_level=number_sense,
+                processing_speed_level=speed,
+                # compD's confidence expression is used for both paths (model.py:449-452).
                 confidence_score=confidence_score(features),
-                model_version=MODEL_VERSION,
+                model_version=version,
                 # The vector is stored, the recommendation TEXT is not -- it is rebuilt in the
                 # language of each read. See DCognitiveProfileRecord's docstring.
                 features=features.model_dump(),
